@@ -192,7 +192,10 @@ def rate_limit(request: Request) -> None:
 # --------------------------------------------------------------------------
 
 def _header_name(name: str | None) -> str:
-    return (name or "media").replace("\r", "").replace("\n", "")
+    if not name:
+        return ""
+    # URL-encode to safely pass emojis and non-ASCII characters in HTTP headers
+    return urllib.parse.quote(name.replace("\r", "").replace("\n", ""))
 
 
 def _check_model(model: type[BaseModel], **values) -> BaseModel:
@@ -299,7 +302,7 @@ def _serve_download(req: DownloadRequest, background: BackgroundTasks):
         media_type_out = "video" if result.media_type == "video" else "audio"
         filename = f"{Downloader.sanitize_filename(info.title)}.{ext}"
         headers = {
-            "X-File-Name": filename,
+            "X-File-Name": urllib.parse.quote(filename),
             "X-Media-Type": media_type_out,
             "X-Title": _header_name(info.title or "media"),
             "X-Duration": str(info.duration or ""),
@@ -325,9 +328,15 @@ def _serve_download(req: DownloadRequest, background: BackgroundTasks):
                                 detail="Could not bundle playlist files.")
         keep.append(tmp)
         filename = f"{Downloader.sanitize_filename(info.title) or 'playlist'}.zip"
+        
+        headers = {
+            "X-File-Count": str(len(files)),
+            "X-File-Name": urllib.parse.quote(filename),
+        }
+        
         response = FileResponse(
             path=tmp, media_type="application/zip", filename=filename,
-            headers={"X-File-Count": str(len(files))},
+            headers=headers,
         )
 
     # Clean the staging dir(s) and zip only after the response is streamed.
