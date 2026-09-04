@@ -1,7 +1,12 @@
 # Sensitive / transient — never commit these
-cookies/
 downloads/
 __pycache__/
 *.pyc
 .venv/
 .env
+
+# Cookie files ARE committed intentionally (so Render can read ./cookies/
+# from the repo on its ephemeral filesystem). Ignore everything in the
+# folder except the cookie files themselves.
+cookies/*
+!cookies/*.txt

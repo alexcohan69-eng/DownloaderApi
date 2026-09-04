@@ -27,8 +27,9 @@ Telegram bot ──URL──▶ Downloader API ──yt-dlp──▶ media file
 7. [Telegram bot integration](#telegram-bot-integration)
 8. [Cookies](#cookies)
 9. [Configuration](#configuration)
-10. [Project layout](#project-layout)
-11. [Notes & limits](#notes--limits)
+10. [Deploy to Render](#deploy-to-render)
+11. [Project layout](#project-layout)
+12. [Notes & limits](#notes--limits)
 
 ---
 
@@ -304,6 +305,100 @@ Example:
 ```bash
 YDL_PORT=9000 YDL_PROXY="socks5://127.0.0.1:1080" ./run.sh
 ```
+
+---
+
+## Deploy to Render
+
+The repo ships with a **Render Blueprint** (`render.yaml`) and an optional
+**Dockerfile** so you can deploy this as a web service in a few clicks.
+
+### 1. Put it in a git repo
+
+```bash
+cd downloader
+git init
+git add .
+git commit -m "media downloader"
+git remote add origin <your-repo-url>
+git push -u origin main
+```
+
+> **Commit your cookie files.** Render's filesystem is ephemeral — it is
+> recreated from the repo on every deploy, and *any* file you upload through the
+> dashboard is lost on the next deploy. So your Netscape cookie files in
+> `./cookies/*.txt` (e.g. `youtube.txt`) are **intentionally committed to the
+> repo** (see `.gitignore`), and the deployed instance reads them from
+> `./cookies/` exactly like locally. Update a cookie later? Replace the file,
+> commit, and push — Render redeploys automatically (`autoDeploy: true`).
+>
+> `cookie.txt` files contain login tokens — keep the repo private, or commit
+> only the sites you actually need.
+
+### 2. Deploy via Blueprint (recommended)
+
+1. Render dashboard → **New+** → **Blueprint**.
+2. Select your repo.
+3. Render reads `render.yaml` and creates the `media-downloader` web service.
+4. Pick a **plan** (free / starter / pro) and **region** in the service settings.
+5. Deploy. When the deploy finishes, open `https://media-downloader.onrender.com/`
+   and you should see the text help page.
+
+The Blueprint takes care of:
+
+- installing **ffmpeg** (required for video merging and MP3 conversion)
+- installing `requirements.txt`
+- launching via `./start.sh` (uses Render's injected `$PORT`)
+- a health check on `/` so Render knows when the service is up
+- setting `PYTHON_VERSION=3.12.0`
+
+Optional knobs (`YDL_TIMEOUT`, `YDL_MAX_PLAYLIST_ITEMS`,
+`YDL_RATE_LIMIT_MAX`, …) are commented out in `render.yaml` — uncomment to set
+them. There are **no cookie-related environment variables**: cookies come from
+the committed `./cookies/*.txt` files.
+
+### Alternative: manual web service
+
+Same repo, but: **New+** → **Web Service** → pick the repo → choose
+**Python** runtime → paste these two commands:
+
+- Build: `pip install -r requirements.txt`
+- Start: `./start.sh`
+
+and add env vars `PYTHON_VERSION=3.12.0` and `PYTHONUNBUFFERED=1`. (You still
+need ffmpeg — either use the Docker path or add the `apt-get install ffmpeg`
+step to the build command.)
+
+### Alternative: Docker
+
+Set the service **Runtime** to **Docker** (the repo's `Dockerfile` is used).
+This gives you a byte-identical image locally and in production. Note: with
+Docker, your cookies are baked into the image, so updating them requires a
+rebuild + redeploy.
+
+### Connecting your bot
+
+Point your bot at `https://media-downloader.onrender.com` (no port needed):
+
+```bash
+export DOWNLOADER_API="https://media-downloader.onrender.com"
+python examples/telegram_bot.py
+```
+
+### Render caveats
+
+- **Free plan spin-down**: after ~15 min idle the service sleeps; the first
+  request after that pays a 30–60 s cold start. A keep-alive ping from your bot
+  server (or a paid plan) avoids it.
+- **Ephemeral disk**: fine here — downloads are staged in `./downloads/` and
+  deleted after each response. Just remember cookies live in the repo, not on
+  the disk.
+- **Timeouts**: downloads can take minutes; make your caller's timeout generous,
+  and if you need more than Render's web-service limits, raise
+  `YDL_TIMEOUT` and/or size/keep-alive limits.
+- **No auth**: the API is open by design (only your bot should call it). Keep
+  the service URL private, or put a reverse proxy / auth / Cloudflare in front
+  if it leaks.
 
 ---
 

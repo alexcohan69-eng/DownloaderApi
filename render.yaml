@@ -1,0 +1,39 @@
+# Render Blueprint — Universal Media Downloader (web service)
+#
+# How to deploy:
+#   1. Put this project in a git repo (git init; git add .; git commit; git push).
+#      Your Netscape cookie files go in ./cookies/*.txt and ARE committed, so
+#      the deployed instance picks them up straight from the repo on Render's
+#      ephemeral filesystem (no env-var hacks needed).
+#   2. Render dashboard → New+ → Blueprint → select this repo.
+#      Render creates the web service from this file automatically.
+#
+# The API has no auth (it is designed to be called only by your Telegram bot).
+# Keep it private or put it behind a limited reverse proxy if you expose it.
+
+services:
+  - type: web
+    name: media-downloader
+    runtime: python
+    # plan: free            # free | starter | pro — choose in the dashboard
+    # region: oregon        # oregon | frankfurt | singapore | ohio | virginia
+    buildCommand: |
+      apt-get update && apt-get install -y --no-install-recommends ffmpeg
+      rm -rf /var/lib/apt/lists/*
+      python -m pip install --upgrade pip
+      python -m pip install -r requirements.txt
+    startCommand: ./start.sh
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Optional knobs (see README → "Configuration"):
+      # - key: YDL_MAX_PLAYLIST_ITEMS
+      #   value: "10"
+      # - key: YDL_TIMEOUT
+      #   value: "900"
+      # - key: YDL_RATE_LIMIT_MAX
+      #   value: "0"        # 0 disables the built-in per-IP rate limit
