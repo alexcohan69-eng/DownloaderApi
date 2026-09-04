@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -310,9 +311,11 @@ def _serve_download(req: DownloadRequest, background: BackgroundTasks):
             path=file_path, media_type=mime, filename=filename, headers=headers,
         )
     else:
-        # multiple files (playlist) -> zip
-        tmp = Path(tempfile.mkstemp(prefix="dl_zip_", suffix=".zip",
-                                    dir=config.DOWNLOADS_DIR)[1])
+        # multiple files (playlist) -> zip (fixed fd leak here)
+        fd, tmp_path = tempfile.mkstemp(prefix="dl_zip_", suffix=".zip",
+                                        dir=config.DOWNLOADS_DIR)
+        os.close(fd)
+        tmp = Path(tmp_path)
         try:
             Downloader.make_zip(files, tmp)
             keep.append(files[0].parent)
@@ -521,5 +524,3 @@ for _p in config.DOWNLOADS_DIR.iterdir():
             pass
 if _stale:
     log.warning("%s recent temp dirs left from a previous run", _stale)
-
-
