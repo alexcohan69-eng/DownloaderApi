@@ -322,6 +322,21 @@ All optional — the defaults are sensible. Set any of these in Render →
 | `YDL_RATE_LIMIT_MAX` | `10` | Max requests per IP per minute (`0` = off) |
 | `YDL_PROXY` | *(none)* | Route yt-dlp through a proxy, e.g. `socks5://host:1080` |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | Point at a self-hosted Bot API server for big files |
+| `YDL_LOG_BUFFER_SIZE` | `500` | How many recent log lines the `/logs` viewer keeps in memory |
+| `YDL_LOGS_SECRET` | *(none)* | Password required to open `/logs` (pass as `?key=...`). **Set this if the service is public.** |
+
+---
+
+## Live log viewer
+
+Open `https://your-downloader.onrender.com/logs` in a browser for a live,
+terminal-style view of everything the service logs — downloads starting,
+Telegram job status, warnings, errors — updating in real time (Server-Sent
+Events) with level filters, text search, pause/autoscroll, and a 500-line
+backlog shown on load. It's read-only and in-memory only (nothing is written
+to disk), and resets on every deploy/restart.
+
+If you set `YDL_LOGS_SECRET`, add it to the URL: `/logs?key=your-secret`.
 
 ---
 

@@ -12,24 +12,28 @@ dropping a Netscape-format file into ./cookies/ and passing
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import tempfile
 import urllib.parse
 from pathlib import Path
+from queue import Empty
 from typing import Optional
 
 from fastapi import (BackgroundTasks, Depends, FastAPI, Header, HTTPException,
                      Query, Request)
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse, StreamingResponse)
 from pydantic import BaseModel, Field, ValidationError, validator
 
-from . import config, jobs
+from . import config, jobs, logbuffer
 from .downloader import (AUDIO_BITRATES, VIDEO_FORMATS, DownloadError,
                          Downloader, DownloadResult, MEDIA_TYPES)
 from .jobs import JobParams
+from .logs_page import LOGS_PAGE_HTML
 from .telegram import valid_token
 
 logging.basicConfig(
@@ -37,6 +41,11 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("app.api")
+
+# Attach the in-memory ring buffer that backs the /logs web viewer to the
+# root logger so it captures records from every module (app.api, app.jobs,
+# app.downloader, uvicorn, etc).
+logbuffer.install(capacity=config.LOG_BUFFER_SIZE)
 
 app = FastAPI(
     title="Universal Media Downloader",
@@ -237,7 +246,9 @@ def root() -> PlainTextResponse:
         "  POST variants accept the same fields as JSON.\n\n"
         "Webhook (push, Cobalt-style — sends straight to Telegram):\n"
         "  POST /jobs  {url, chat_id, bot_token, media_type, quality, cookies, playlist, caption}\n"
-        "  GET  /jobs/<job_id>   -> job status\n"
+        "  GET  /jobs/<job_id>   -> job status\n\n"
+        "Live logs (in-browser viewer):\n"
+        "  GET /logs   -> live-tailing log page (add ?key=... if YDL_LOGS_SECRET is set)\n"
     )
 
 
@@ -403,6 +414,73 @@ def get_job(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found or expired.")
     return {"ok": True, **job.public()}
+
+
+# --------------------------------------------------------------------------
+# Live log viewer (/logs). Read-only, in-memory, process-local — a quick way
+# to watch what the service is doing without shelling into Render.
+# --------------------------------------------------------------------------
+
+def _check_logs_secret(request: Request, key: Optional[str] = None,
+                       x_logs_secret: Optional[str] = None) -> None:
+    if not config.LOGS_SECRET:
+        return
+    provided = x_logs_secret or key or request.query_params.get("key")
+    if provided != config.LOGS_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid or missing logs key.")
+
+
+def _sse_event(entry: dict) -> str:
+    return f"data: {json.dumps(entry)}\n\n"
+
+
+def _log_stream(request: Request):
+    buf = logbuffer.buffer
+    assert buf is not None  # installed at import time, above
+    q = buf.subscribe()
+    try:
+        for entry in buf.recent():
+            yield _sse_event(entry)
+        while True:
+            try:
+                entry = q.get(timeout=15)
+                yield _sse_event(entry)
+            except Empty:
+                # Comment ping keeps proxies/browsers from timing out an
+                # idle SSE connection.
+                yield ": keep-alive\n\n"
+    finally:
+        buf.unsubscribe(q)
+
+
+@app.get("/logs", include_in_schema=False)
+def logs_page(request: Request, key: Optional[str] = Query(None)):
+    _check_logs_secret(request, key=key)
+    return HTMLResponse(LOGS_PAGE_HTML)
+
+
+@app.get("/logs/stream", include_in_schema=False)
+def logs_stream(request: Request, key: Optional[str] = Query(None),
+                x_logs_secret: Optional[str] = Header(None)):
+    _check_logs_secret(request, key=key, x_logs_secret=x_logs_secret)
+    return StreamingResponse(
+        _log_stream(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.get("/logs/data", include_in_schema=False)
+def logs_data(request: Request, key: Optional[str] = Query(None),
+              x_logs_secret: Optional[str] = Header(None),
+              limit: int = Query(200, ge=1, le=2000)):
+    _check_logs_secret(request, key=key, x_logs_secret=x_logs_secret)
+    buf = logbuffer.buffer
+    return {"ok": True, "logs": buf.recent(limit) if buf else []}
 
 
 @app.exception_handler(HTTPException)
