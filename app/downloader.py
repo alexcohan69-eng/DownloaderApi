@@ -59,6 +59,14 @@ AUDIO_BITRATES: dict[str, int] = {
 
 MEDIA_TYPES = {"video", "audio"}
 
+# YouTube periodically breaks yt-dlp's default ("web") player client,
+# producing errors like "Failed to extract any player response". Trying
+# a few alternate clients as fallback makes extraction far more resilient
+# without needing an immediate yt-dlp release to fix it.
+_YOUTUBE_EXTRACTOR_ARGS = {
+    "youtube": {"player_client": ["android", "web", "tv", "ios"]}
+}
+
 
 def _summarize_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Trim yt-dlp's format list to the fields a bot wants to show."""
@@ -214,6 +222,7 @@ class Downloader:
                 "noprogress": True,
                 "windowsfilenames": True,
                 "logger": log,
+                "extractor_args": _YOUTUBE_EXTRACTOR_ARGS,
             }
             if progress is not None:
                 opts["progress_hooks"] = [lambda d: self._progress_hook(d, progress)]
@@ -281,6 +290,7 @@ class Downloader:
             "noplaylist": not playlist,
             "socket_timeout": 30,
             "skip_download": True,
+            "extractor_args": _YOUTUBE_EXTRACTOR_ARGS,
         }
         if self.cookiefile:
             opts["cookiefile"] = str(self.cookiefile)
@@ -363,6 +373,15 @@ class Downloader:
     @staticmethod
     def _friendly_error(e: yt_dlp.utils.DownloadError) -> str:
         msg = (getattr(e, "msg", None) or str(e)).strip()
+        if "sign in to confirm you" in msg.lower() and "bot" in msg.lower():
+            # YouTube is rejecting anonymous requests from this server's IP
+            # (common on cloud/datacenter hosts like Render). yt-dlp's own
+            # message suggests --cookies-from-browser, a CLI flag that does
+            # not apply here — point at this app's actual cookies feature.
+            return ("YouTube is asking to sign in to confirm you're not a "
+                    "bot (this is common for server IPs). Add a YouTube "
+                    "cookies file to the cookies/ folder and pass its name "
+                    "as the 'cookies' field — see README Part 3.")
         exc = getattr(e, "exc_info", None)
         unsafe = ("unable to extract", "does not support", "no player",
                   "requested format", "unable to download video data")
