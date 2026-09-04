@@ -1,0 +1,8 @@
+# NOTE: pinned to work on machines without a Rust toolchain
+# (pydantic v1 and pure-python uvicorn build from source cleanly).
+# On normal machines you can use the newest versions instead.
+fastapi>=0.110,<0.111
+uvicorn>=0.29
+python-multipart>=0.0.9
+pydantic>=1.10,<2
+yt-dlp>=2025.1.15

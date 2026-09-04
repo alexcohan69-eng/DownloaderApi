@@ -1,0 +1,7 @@
+# Sensitive / transient — never commit these
+cookies/
+downloads/
+__pycache__/
+*.pyc
+.venv/
+.env
