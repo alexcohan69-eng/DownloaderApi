@@ -240,9 +240,10 @@ LANDING_PAGE_HTML = """<!doctype html>
         </div>
 
         <p class="pg-hint">
-          Preview fetches metadata only (via <code>/info</code>). Download streams the
-          file directly from <code>/download</code> — your browser will save it like any
-          normal file download. Cookies come from the <code>cookies/</code> folder on the server.
+          Preview fetches metadata only (via <code>/info</code>). Download queues the job
+          via <code>/jobs</code> and delivers the media straight into the configured
+          Telegram chat — image, gif, video, audio, or every item of a group post.
+          Cookies come from the <code>cookies/</code> folder on the server.
         </p>
       </div>
     </section>
@@ -428,17 +429,67 @@ LANDING_PAGE_HTML = """<!doctype html>
       });
   });
 
+  function pollJob(jobId, attempt) {
+    attempt = attempt || 0;
+    fetch("jobs/" + jobId)
+      .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error((res.data && res.data.detail) || "Lost track of the job.");
+        var job = res.data;
+        if (job.status === "done") {
+          setStatus("Delivered to Telegram.", "success");
+          downloadBtn.disabled = false;
+          return;
+        }
+        if (job.status === "error") {
+          setStatus(job.detail || "The job failed.", "error");
+          downloadBtn.disabled = false;
+          return;
+        }
+        setStatus((job.detail || "Working…") + " (job " + jobId + ")");
+        if (attempt > 150) {
+          setStatus("Still working — this is taking longer than usual. Check /jobs/" + jobId + " for status.");
+          downloadBtn.disabled = false;
+          return;
+        }
+        setTimeout(function () { pollJob(jobId, attempt + 1); }, 2000);
+      })
+      .catch(function (err) {
+        setStatus(err.message || "Lost track of the job.", "error");
+        downloadBtn.disabled = false;
+      });
+  }
+
   downloadBtn.addEventListener("click", function () {
     if (!validateUrl()) return;
-    setStatus("Starting download — this may take a moment for large files…");
-    var params = buildParams();
-    // Let the browser handle the actual streaming/save-to-disk itself,
-    // exactly like clicking a normal file link — no need to buffer the
-    // whole file in JS memory first.
-    window.location.href = "download?" + params.toString();
-    setTimeout(function () {
-      setStatus("If the download didn't start, the URL may be invalid or blocked — check the message on this page or try Preview info first.");
-    }, 4000);
+    setStatus("Queuing your download for delivery to Telegram…");
+    downloadBtn.disabled = true;
+
+    var payload = {
+      url: urlInput.value.trim(),
+      media_type: typeSelect.value,
+      quality: qualitySelect.value,
+      playlist: !!playlistCheck.checked,
+    };
+    if (cookiesSelect.value) payload.cookies = cookiesSelect.value;
+
+    fetch("jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      .then(function (res) {
+        if (!res.ok || res.data.ok === false) {
+          throw new Error((res.data && (res.data.detail || res.data.error)) || "Could not queue the job.");
+        }
+        setStatus("Queued — sending to Telegram…");
+        pollJob(res.data.job_id, 0);
+      })
+      .catch(function (err) {
+        setStatus(err.message || "Could not queue the job.", "error");
+        downloadBtn.disabled = false;
+      });
   });
 
   urlInput.addEventListener("keydown", function (e) {
