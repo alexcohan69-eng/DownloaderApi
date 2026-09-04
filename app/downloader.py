@@ -102,24 +102,57 @@ def _is_retryable_x_error(exc: BaseException) -> bool:
     return "suspend" in msg or "no video could be found" in msg
 
 
+# A stale, expired, or logged-out-by-the-site cookie file does not just
+# break the *one* site it was exported for — since every site's cookies
+# file is optional input, a bad one should never make a request fail
+# outright when the same content might still be reachable as a logged-out
+# guest (which is exactly how public posts/videos are meant to be viewed).
+# yt-dlp's error text for "your cookies are stale/rejected" varies a lot
+# by extractor, so this matches the common phrasings across sites rather
+# than hardcoding one site's wording.
+_COOKIE_RELATED_ERROR_PATTERNS = (
+    "authentication is required",
+    "requires authentication",
+    "empty media response",
+    "not logged in",
+    "log in to",
+    "sign in to",
+    "please log in",
+    "consent",
+    "rate-limit",
+    "rate limit",
+)
+
+
+def _is_retryable_cookie_error(exc: BaseException) -> bool:
+    msg = str(getattr(exc, "msg", None) or exc).lower()
+    return any(p in msg for p in _COOKIE_RELATED_ERROR_PATTERNS)
+
+
 def _extract_with_fallback(base_opts: dict[str, Any], url: str,
                             download: bool) -> Any:
-    """Run yt-dlp's extraction, retrying X's false "Suspended" / "No video
-    could be found" errors.
+    """Run yt-dlp's extraction, retrying failures that look caused by a
+    bad cookie file rather than by the content itself.
 
-    Only kicks in for x.com/twitter.com URLs that were fetched with a
-    cookiefile; other sites and errors behave exactly as before.
+    If a cookiefile was supplied and the first attempt fails with an
+    error that looks auth/cookie-related (stale session, "sign in to
+    view this", "empty media response", etc.), retry once as a logged-out
+    guest — many public posts are perfectly viewable without an account,
+    and a stale cookie should never make an otherwise-working download
+    fail outright. X (Twitter) gets two extra retries on top of that for
+    its well-known false "Suspended" / "No video could be found" replies.
     """
     attempts = [base_opts]
-    if base_opts.get("cookiefile") and _is_x_url(url):
+    if base_opts.get("cookiefile"):
         guest_opts = {k: v for k, v in base_opts.items() if k != "cookiefile"}
         attempts.append(guest_opts)
-        syndication_opts = dict(guest_opts)
-        syndication_opts["extractor_args"] = {
-            **guest_opts.get("extractor_args", {}),
-            "twitter": {"api": ["syndication"]},
-        }
-        attempts.append(syndication_opts)
+        if _is_x_url(url):
+            syndication_opts = dict(guest_opts)
+            syndication_opts["extractor_args"] = {
+                **guest_opts.get("extractor_args", {}),
+                "twitter": {"api": ["syndication"]},
+            }
+            attempts.append(syndication_opts)
 
     last_exc: Optional[yt_dlp.utils.DownloadError] = None
     for i, opts in enumerate(attempts):
@@ -129,11 +162,11 @@ def _extract_with_fallback(base_opts: dict[str, Any], url: str,
         except yt_dlp.utils.DownloadError as e:
             last_exc = e
             is_last = i == len(attempts) - 1
-            if is_last or not _is_retryable_x_error(e):
+            retryable = _is_retryable_x_error(e) or _is_retryable_cookie_error(e)
+            if is_last or not retryable:
                 raise
-            log.warning("X reported a false '%s' error using the "
-                       "authenticated session for %s; retrying with a "
-                       "different session (attempt %d/%d)",
+            log.warning("'%s' looked cookie-related for %s; retrying with "
+                       "a different session (attempt %d/%d)",
                        str(getattr(e, "msg", None) or e).strip(), url, i + 2, len(attempts))
     raise last_exc  # pragma: no cover - unreachable, loop always returns or raises
 
@@ -480,6 +513,17 @@ class Downloader:
                     "session to view. Add a cookies file for an account "
                     "old enough to view the content to the cookies/ "
                     "folder and pass its name as the 'cookies' field.")
+        if _is_retryable_cookie_error(e):
+            # We already retried this as a logged-out guest (see
+            # _extract_with_fallback) and it still failed, so the content
+            # genuinely requires a valid, logged-in session — the
+            # cookies file supplied (if any) is missing, stale, or was
+            # invalidated by the site.
+            return ("This content requires a logged-in session and could "
+                    "not be viewed as a guest either. Export a fresh "
+                    "cookies file from a browser where you're currently "
+                    "logged in to this site, save it under cookies/, and "
+                    "pass its file name as the 'cookies' field.")
         exc = getattr(e, "exc_info", None)
         unsafe = ("unable to extract", "does not support", "no player",
                   "requested format", "unable to download video data")
