@@ -19,15 +19,18 @@ import urllib.parse
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import (BackgroundTasks, Depends, FastAPI, Header, HTTPException,
+                     Query, Request)
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError, validator
 
-from . import config
+from . import config, jobs
 from .downloader import (AUDIO_BITRATES, VIDEO_FORMATS, DownloadError,
                          Downloader, DownloadResult, MEDIA_TYPES)
+from .jobs import JobParams
+from .telegram import valid_token
 
 logging.basicConfig(
     level=logging.INFO,
@@ -95,6 +98,55 @@ class InfoRequest(BaseModel):
         v = v.strip()
         if not v or "://" not in v:
             raise ValueError("url must be http(s)")
+        return v
+
+    @validator("cookies")
+    def _valid_cookies(cls, v: Optional[str]) -> Optional[str]:
+        if v and not Downloader._resolve_cookie_safe(v):
+            raise ValueError("cookies file is invalid or missing")
+        return v or None
+
+
+class WebhookRequest(BaseModel):
+    """Payload your Telegram bot POSTs to /jobs to trigger a push download."""
+
+    url: str
+    chat_id: str = Field(..., description="Telegram chat id to deliver into")
+    bot_token: str = Field(..., description="Bot token used to send the file")
+    media_type: str = Field("video", description="video | audio")
+    quality: str = Field("best", description="best/720p/etc for video, kbps for audio")
+    cookies: Optional[str] = Field(None, description="cookie file name inside ./cookies/")
+    playlist: bool = Field(False, description="download a playlist and send as a zip")
+    caption: Optional[str] = Field(None, description="override the message caption")
+    reply_to_message_id: Optional[int] = Field(None, description="reply to this message")
+    secret: Optional[str] = Field(None, description="shared secret (or use X-Webhook-Secret header)")
+
+    @validator("url")
+    def _valid_url(cls, v: str) -> str:
+        v = v.strip()
+        if not v or "://" not in v or urllib.parse.urlparse(v).scheme.lower() not in ("http", "https"):
+            raise ValueError("url must be http(s)")
+        return v
+
+    @validator("chat_id")
+    def _valid_chat(cls, v: str) -> str:
+        v = str(v).strip()
+        if not v:
+            raise ValueError("chat_id is required")
+        return v
+
+    @validator("bot_token")
+    def _valid_token(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not valid_token(v):
+            raise ValueError("bot_token looks invalid")
+        return v
+
+    @validator("media_type")
+    def _valid_media_type(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in MEDIA_TYPES:
+            raise ValueError(f"media_type must be one of {MEDIA_TYPES}")
         return v
 
     @validator("cookies")
@@ -179,9 +231,13 @@ def _fetch_info(req: InfoRequest) -> dict:
 def root() -> PlainTextResponse:
     return PlainTextResponse(
         "Universal Media Downloader API\n\n"
-        "GET /download?url=<url>&media_type=video|audio&quality=best&cookies=file.txt&playlist=false\n"
-        "GET /info?url=<url>&cookies=file.txt\n"
-        "POST variants accept the same fields as JSON.\n"
+        "Sync (returns the file bytes):\n"
+        "  GET /download?url=<url>&media_type=video|audio&quality=best&cookies=file.txt&playlist=false\n"
+        "  GET /info?url=<url>&cookies=file.txt\n"
+        "  POST variants accept the same fields as JSON.\n\n"
+        "Webhook (push, Cobalt-style — sends straight to Telegram):\n"
+        "  POST /jobs  {url, chat_id, bot_token, media_type, quality, cookies, playlist, caption}\n"
+        "  GET  /jobs/<job_id>   -> job status\n"
     )
 
 
@@ -290,6 +346,63 @@ def info_get(
 @app.post("/info")
 def info_post(body: InfoRequest):
     return _fetch_info(body)
+
+
+# --------------------------------------------------------------------------
+# Webhook / async job flow (Cobalt-style push delivery).
+#
+#   Your bot ── POST /jobs {url, chat_id, bot_token, ...} ──▶ here
+#   We return 202 instantly, download in the background, then send the file
+#   straight into the Telegram chat using the supplied bot token.
+# --------------------------------------------------------------------------
+
+def _validate_quality(media_type: str, quality: str) -> None:
+    if media_type == "video":
+        if quality not in VIDEO_FORMATS:
+            raise HTTPException(status_code=422,
+                                detail=f"Unknown video quality '{quality}'. "
+                                       f"Allowed: {', '.join(VIDEO_FORMATS)}")
+    elif quality not in AUDIO_BITRATES:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown audio quality '{quality}'. "
+                                   f"Allowed: {', '.join(AUDIO_BITRATES)}")
+
+
+@app.post("/jobs", status_code=202)
+def create_job(
+    body: WebhookRequest,
+    x_webhook_secret: Optional[str] = Header(None),
+    _: None = Depends(rate_limit),
+):
+    # Auth: shared secret from header or body (only enforced if configured).
+    if config.WEBHOOK_SECRET:
+        provided = x_webhook_secret or body.secret
+        if provided != config.WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Invalid or missing webhook secret.")
+
+    _validate_quality(body.media_type, body.quality)
+
+    job = jobs.store.submit(JobParams(
+        url=body.url,
+        chat_id=body.chat_id,
+        bot_token=body.bot_token,
+        media_type=body.media_type,
+        quality=body.quality,
+        cookies=body.cookies,
+        playlist=body.playlist,
+        caption=body.caption,
+        reply_to_message_id=body.reply_to_message_id,
+    ))
+    log.info("queued job %s -> chat %s (%s)", job.id, body.chat_id, body.media_type)
+    return {"ok": True, "job_id": job.id, "status": job.status}
+
+
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    job = jobs.store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+    return {"ok": True, **job.public()}
 
 
 @app.exception_handler(HTTPException)

@@ -60,6 +60,73 @@ curl -L -o out.mp4 \
 - `cookies` param → filename of a cookie file inside `./cookies/` on the server
   (for sites that need login).
 
+---
+
+## Webhook mode (push delivery, Cobalt-style) — recommended for bots
+
+The sync `/download` flow makes the **caller** hold the connection open for the
+whole download and then re-upload the bytes to Telegram — the file travels the
+network twice and a slow download can time out.
+
+`POST /jobs` flips this around. Your bot fires one small request and forgets;
+the downloader does the work and **sends the finished file straight into the
+Telegram chat itself**, using a bot token you pass in the request.
+
+```
+Your bot ──POST /jobs {url, chat_id, bot_token}──▶ Downloader
+                                              │ 202 Accepted (instant)
+                                              ▼
+                                      yt-dlp download (background)
+                                              ▼
+                                 Telegram sendVideo / sendAudio
+                                              ▼
+                                        file lands in the chat
+```
+
+**Request** — `POST /jobs` with a JSON body:
+
+| field                  | required | notes                                              |
+| ---------------------- | :------: | -------------------------------------------------- |
+| `url`                  |    ✓     | the media URL (http/https)                         |
+| `chat_id`              |    ✓     | Telegram chat to deliver into                      |
+| `bot_token`            |    ✓     | token the downloader uses to send the file         |
+| `media_type`           |          | `video` (default) or `audio`                       |
+| `quality`              |          | `best`/`720p`/… (video) or `320`/`128`/… (audio)   |
+| `cookies`              |          | cookie filename inside `./cookies/`                |
+| `playlist`             |          | `true` → download the playlist and send as a `.zip`|
+| `caption`              |          | override the message caption                       |
+| `reply_to_message_id`  |          | reply to a specific message                        |
+
+```bash
+curl -X POST https://downloaderapi-mp8v.onrender.com/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'X-Webhook-Secret: your-secret' \
+  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","chat_id":"123456789","bot_token":"123:ABC","quality":"720p"}'
+```
+
+**Response** — `202 Accepted` right away:
+
+```json
+{ "ok": true, "job_id": "c71196284bcd4f8a", "status": "downloading" }
+```
+
+The chat then receives a live "Downloading…" status message, followed by the
+final video/audio (the status message is deleted on success). Poll
+`GET /jobs/<job_id>` any time for `{ status, detail }` where status is
+`queued | downloading | uploading | done | error`.
+
+**Large files:** the public Telegram Bot API caps bot uploads at **50 MB**. If
+the result is bigger, the job fails cleanly and the chat gets a clear message
+suggesting a lower quality or audio-only. To lift the cap to ~2 GB, run a
+self-hosted `telegram-bot-api` server and point `TELEGRAM_API_BASE` at it.
+
+**Securing the endpoint:** set `YDL_WEBHOOK_SECRET` on the service and send the
+same value in the `X-Webhook-Secret` header (or a `secret` body field) on every
+call, so only your bot can trigger downloads on a public URL.
+
+See [`examples/telegram_bot_webhook.py`](examples/telegram_bot_webhook.py) for a
+complete fire-and-forget bot.
+
 ### Cookies — where to add them, and how
 
 Some sites (Instagram, private Twitter/X, age-restricted content, Vimeo, your

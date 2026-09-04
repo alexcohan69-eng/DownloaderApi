@@ -37,3 +37,13 @@ services:
       #   value: "900"
       # - key: YDL_RATE_LIMIT_MAX
       #   value: "0"        # 0 disables the built-in per-IP rate limit
+      #
+      # Webhook / push-delivery knobs (POST /jobs):
+      # - key: YDL_WEBHOOK_SECRET
+      #   sync: false       # set a value in the dashboard; required in X-Webhook-Secret
+      # - key: YDL_MAX_UPLOAD_MB
+      #   value: "50"       # raise only if TELEGRAM_API_BASE is a self-hosted server
+      # - key: YDL_MAX_CONCURRENT_JOBS
+      #   value: "2"        # keep small on the free plan (limited CPU/RAM)
+      # - key: TELEGRAM_API_BASE
+      #   value: "https://api.telegram.org"   # point at a self-hosted bot-api for ~2 GB uploads
