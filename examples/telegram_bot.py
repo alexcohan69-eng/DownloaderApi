@@ -18,6 +18,7 @@ This is a single-file example on purpose — adapt it to your own bot.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 
@@ -69,7 +70,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # 1) Preview (optional but nice)
     try:
-        r = requests.get(f"{API}/info", params={"url": url}, timeout=30)
+        # Fixed: Running the blocking requests.get in a background thread
+        r = await asyncio.to_thread(requests.get, f"{API}/info", params={"url": url}, timeout=30)
         r.raise_for_status()
         info = r.json()
         caption = (
@@ -88,7 +90,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         params["cookies"] = COOKIE_FILE
 
     try:
-        resp = requests.get(f"{API}/download", params=params, timeout=1800)
+        # Fixed: Running the long blocking download request in a background thread
+        resp = await asyncio.to_thread(requests.get, f"{API}/download", params=params, timeout=1800)
     except requests.RequestException as e:
         await msg.edit_text(f"⚠️ Download request failed: {e}")
         return
