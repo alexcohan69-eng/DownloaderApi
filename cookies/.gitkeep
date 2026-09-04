@@ -1,0 +1,4 @@
+# This keeps the cookies/ folder in the repo.
+# Drop your Netscape-format cookie files here as <site>.txt (e.g. youtube.txt),
+# then reference them by filename in the "cookies" field of a request.
+# See the README "Adding cookies" section.

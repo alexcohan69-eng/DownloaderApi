@@ -10,3 +10,4 @@ __pycache__/
 # folder except the cookie files themselves.
 cookies/*
 !cookies/*.txt
+!cookies/.gitkeep
