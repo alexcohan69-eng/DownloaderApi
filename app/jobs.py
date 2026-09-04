@@ -124,12 +124,17 @@ class JobStore:
                 pct = progress.get("percent")
                 if isinstance(pct, int) and pct > 0:
                     last_edit = now
-                    tg.send_chat_action(job.chat_id,
-                                        "upload_video" if p.media_type == "video"
-                                        else "upload_audio")
-                    if status_msg_id is not None:
-                        tg.edit_message(job.chat_id, status_msg_id,
-                                        f"Downloading your media... {pct}%")
+                    
+                    # Run Telegram API calls in a separate thread so yt-dlp isn't blocked
+                    def update_tg():
+                        tg.send_chat_action(job.chat_id,
+                                            "upload_video" if p.media_type == "video"
+                                            else "upload_audio")
+                        if status_msg_id is not None:
+                            tg.edit_message(job.chat_id, status_msg_id,
+                                            f"Downloading your media... {pct}%")
+                    
+                    threading.Thread(target=update_tg, daemon=True).start()
 
             # Wire the downloader's progress dict to our throttled callback by
             # polling it from a hook. The Downloader mutates ``progress`` in
