@@ -69,10 +69,10 @@ app.add_middleware(
 
 class DownloadRequest(BaseModel):
     url: str
-    media_type: str = Field("video", description="video | audio")
-    quality: str = Field("best", description="best/720p/etc for video, kbps for audio")
+    media_type: str = Field("video", description="video | audio | auto (any: image/gif/video/audio)")
+    quality: str = Field("best", description="best/720p/etc for video, kbps for audio (ignored for auto)")
     cookies: Optional[str] = Field(None, description="cookie file name inside ./cookies/")
-    playlist: bool = Field(False, description="download all entries of a playlist as a zip")
+    playlist: bool = Field(False, description="download all entries of a playlist/group post as a zip")
 
     @validator("url")
     def _valid_url(cls, v: str) -> str:
@@ -124,10 +124,10 @@ class WebhookRequest(BaseModel):
     url: str
     chat_id: str = Field(..., description="Telegram chat id to deliver into")
     bot_token: str = Field(..., description="Bot token used to send the file")
-    media_type: str = Field("video", description="video | audio")
-    quality: str = Field("best", description="best/720p/etc for video, kbps for audio")
+    media_type: str = Field("video", description="video | audio | auto (any: image/gif/video/audio)")
+    quality: str = Field("best", description="best/720p/etc for video, kbps for audio (ignored for auto)")
     cookies: Optional[str] = Field(None, description="cookie file name inside ./cookies/")
-    playlist: bool = Field(False, description="download a playlist and send as a zip")
+    playlist: bool = Field(False, description="download a playlist/group post and send all items")
     caption: Optional[str] = Field(None, description="override the message caption")
     reply_to_message_id: Optional[int] = Field(None, description="reply to this message")
     secret: Optional[str] = Field(None, description="shared secret (or use X-Webhook-Secret header)")
@@ -273,12 +273,14 @@ def _serve_download(req: DownloadRequest, background: BackgroundTasks):
     """Perform the download and return the file (or a zip for playlists)."""
 
     # Whitelist each option against the allowlists BEFORE touching yt-dlp.
+    # "auto" (any media type: image/gif/video/audio) has no quality knob —
+    # it always takes the best native format the source offers.
     if req.media_type == "video":
         if req.quality not in VIDEO_FORMATS:
             raise HTTPException(status_code=422,
                                 detail=f"Unknown video quality '{req.quality}'. "
                                        f"Allowed: {', '.join(VIDEO_FORMATS)}")
-    else:
+    elif req.media_type == "audio":
         if req.quality not in AUDIO_BITRATES:
             raise HTTPException(status_code=422,
                                 detail=f"Unknown audio quality '{req.quality}'. "
@@ -299,7 +301,10 @@ def _serve_download(req: DownloadRequest, background: BackgroundTasks):
         file_path = files[0]
         keep.append(file_path.parent)
         ext = file_path.suffix.lstrip(".") or "bin"
-        media_type_out = "video" if result.media_type == "video" else "audio"
+        if result.media_type == "auto":
+            media_type_out = Downloader.classify_ext(ext)
+        else:
+            media_type_out = "video" if result.media_type == "video" else "audio"
         filename = f"{Downloader.sanitize_filename(info.title)}.{ext}"
         headers = {
             "X-File-Name": urllib.parse.quote(filename),
@@ -389,10 +394,12 @@ def _validate_quality(media_type: str, quality: str) -> None:
             raise HTTPException(status_code=422,
                                 detail=f"Unknown video quality '{quality}'. "
                                        f"Allowed: {', '.join(VIDEO_FORMATS)}")
-    elif quality not in AUDIO_BITRATES:
-        raise HTTPException(status_code=422,
-                            detail=f"Unknown audio quality '{quality}'. "
-                                   f"Allowed: {', '.join(AUDIO_BITRATES)}")
+    elif media_type == "audio":
+        if quality not in AUDIO_BITRATES:
+            raise HTTPException(status_code=422,
+                                detail=f"Unknown audio quality '{quality}'. "
+                                       f"Allowed: {', '.join(AUDIO_BITRATES)}")
+    # "auto" has no quality knob — always best native format.
 
 
 @app.post("/jobs", status_code=202)

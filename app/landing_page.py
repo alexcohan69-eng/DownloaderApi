@@ -197,6 +197,7 @@ LANDING_PAGE_HTML = """<!doctype html>
             <select id="pgType">
               <option value="video">Video</option>
               <option value="audio">Audio</option>
+              <option value="auto">Any (image / gif / video)</option>
             </select>
           </div>
           <div class="pg-field">

@@ -58,7 +58,11 @@ AUDIO_BITRATES: dict[str, int] = {
     "worst": 64,
 }
 
-MEDIA_TYPES = {"video", "audio"}
+# "auto" downloads whatever the source actually is — image, gif, video or
+# audio — without forcing a video/audio codec or container, so posts that
+# mix media types (or are pure images/gifs) come through untouched instead
+# of failing a "no video stream" format-selection error.
+MEDIA_TYPES = {"video", "audio", "auto"}
 
 # YouTube periodically breaks yt-dlp's default ("web") player client,
 # producing errors like "Failed to extract any player response". Trying
@@ -241,6 +245,23 @@ class Downloader:
         return paths
 
     @staticmethod
+    def classify_ext(ext: Optional[str]) -> str:
+        """Classify a file extension into a coarse media kind, used by
+        "auto" downloads (and by the /jobs Telegram delivery) to decide
+        how each file — image, gif, video or audio — should be handled.
+        """
+        ext = (ext or "").lower().lstrip(".")
+        if ext == "gif":
+            return "gif"
+        if ext in {"jpg", "jpeg", "png", "webp", "heic", "bmp", "tiff"}:
+            return "image"
+        if ext in {"mp4", "mov", "webm", "mkv", "avi", "m4v", "3gp"}:
+            return "video"
+        if ext in {"mp3", "m4a", "aac", "ogg", "opus", "wav", "flac"}:
+            return "audio"
+        return "file"
+
+    @staticmethod
     def sanitize_filename(name: str) -> str:
         """Strip characters that are hostile in a filename or HTTP header."""
         name = re.sub(r"[\r\n\t/\\]", "_", name)
@@ -318,7 +339,8 @@ class Downloader:
         The caller is responsible for deleting the staging directory
         afterwards (see ``Downloader.cleanup``).
         """
-        media_type = "audio" if media_type == "audio" else "video"
+        if media_type not in MEDIA_TYPES:
+            media_type = "video"
         dl_dir = Path(tempfile.mkdtemp(prefix="dl_", dir=config.DOWNLOADS_DIR))
         start = time.monotonic()
         try:
@@ -356,7 +378,7 @@ class Downloader:
                 opts["format"] = VIDEO_FORMATS[quality]
                 opts["merge_output_format"] = "mp4"
                 expected_ext = "mp4"
-            else:
+            elif media_type == "audio":
                 opts["format"] = "bestaudio/best"
                 opts["postprocessors"] = [{
                     "key": "FFmpegExtractAudio",
@@ -364,6 +386,15 @@ class Downloader:
                     "preferredquality": str(AUDIO_BITRATES[quality]),
                 }]
                 expected_ext = "mp3"
+            else:
+                # "auto": accept whatever the source actually serves —
+                # image, gif, video or audio — instead of forcing a codec
+                # that a photo/gif-only post could never satisfy. This is
+                # also what lets group posts (carousels with a mix of
+                # photos, gifs and videos) come through with every item
+                # in its native format.
+                opts["format"] = "best/bestvideo+bestaudio"
+                expected_ext = None
 
             max_items = config.MAX_PLAYLIST_ITEMS or 20
             opts["playlist_items"] = f"1:{max_items}"
