@@ -188,7 +188,7 @@ LANDING_PAGE_HTML = """<!doctype html>
         <div class="pg-row">
           <div class="pg-field wide">
             <label for="pgUrl">Media URL</label>
-            <input id="pgUrl" type="url" placeholder="https://twitter.com/.../status/..." autocomplete="off" />
+            <input id="pgUrl" type="url" placeholder="https://x.com/.../status/..." autocomplete="off" />
           </div>
         </div>
         <div class="pg-row">

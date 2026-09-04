@@ -247,7 +247,7 @@ one file per site:
 cookies/
 ├── youtube.txt
 ├── instagram.txt
-└── twitter.txt
+└── x.txt
 ```
 
 ### Step 3 — Commit and push so Render gets it
