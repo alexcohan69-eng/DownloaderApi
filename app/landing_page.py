@@ -192,6 +192,12 @@ LANDING_PAGE_HTML = """<!doctype html>
           </div>
         </div>
         <div class="pg-row">
+          <div class="pg-field wide">
+            <label for="pgLabel">Label</label>
+            <input id="pgLabel" type="text" placeholder="Optional caption — leave empty to use the post's real caption" autocomplete="off" />
+          </div>
+        </div>
+        <div class="pg-row">
           <div class="pg-field">
             <label for="pgType">Media type</label>
             <select id="pgType">
@@ -323,6 +329,7 @@ LANDING_PAGE_HTML = """<!doctype html>
 
   // --- Playground ---
   var urlInput = document.getElementById("pgUrl");
+  var labelInput = document.getElementById("pgLabel");
   var typeSelect = document.getElementById("pgType");
   var qualitySelect = document.getElementById("pgQuality");
   var cookiesSelect = document.getElementById("pgCookies");
@@ -472,6 +479,7 @@ LANDING_PAGE_HTML = """<!doctype html>
       playlist: !!playlistCheck.checked,
     };
     if (cookiesSelect.value) payload.cookies = cookiesSelect.value;
+    if (labelInput.value.trim()) payload.caption = labelInput.value.trim();
 
     fetch("jobs", {
       method: "POST",
