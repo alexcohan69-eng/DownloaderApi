@@ -181,9 +181,9 @@ class MediaInfo:
 
 @dataclass
 class DownloadResult:
-    files: list[Path]          # one file normally, many for a playlist
+    files: list[Path]           # one file normally, many for a playlist
     info: MediaInfo
-    media_type: str            # "video" | "audio"
+    media_type: str             # "video" | "audio"
     quality: str
     elapsed: float = 0.0
 
@@ -256,17 +256,14 @@ class Downloader:
         ]
         if not files:
             return []
-        if len(files) == 1:
+        # If there are multiple files (group media / carousels / playlists), return all of them
+        if len(files) > 1:
             return files
-        # Prefer files matching the expected container (merged mp4 / mp3),
-        # then the largest, and drop tiny leftovers (e.g. thumbnails we
-        # did not ask for).
         if expected_ext:
             ext_files = [p for p in files if p.suffix.lower() == f".{expected_ext}"]
             if ext_files:
                 return ext_files
-        primary = max(files, key=lambda p: p.stat().st_size)
-        return [primary]
+        return files
 
     def _progress_hook(self, d: dict[str, Any], progress: dict[str, Any]) -> None:
         try:
@@ -331,10 +328,10 @@ class Downloader:
                 raise DownloadError(f"Unknown audio quality '{quality}'.")
 
             opts: dict[str, Any] = {
-                "outtmpl": str(dl_dir / "%(id)s.%(ext)s"),
+                "outtmpl": str(dl_dir / "%(id)s_%(autonumber)s.%(ext)s"),
                 "quiet": True,
                 "no_warnings": True,
-                "noplaylist": not playlist,
+                "noplaylist": False,
                 "socket_timeout": 30,
                 "retries": 3,
                 "fragment_retries": 3,
@@ -344,6 +341,11 @@ class Downloader:
                 "logger": log,
                 "extractor_args": _YOUTUBE_EXTRACTOR_ARGS,
             }
+            
+            # Keep playlist single for standard YouTube links unless explicitly requested
+            if not playlist and ("youtube.com" in url or "youtu.be" in url):
+                opts["noplaylist"] = True
+
             if progress is not None:
                 opts["progress_hooks"] = [lambda d: self._progress_hook(d, progress)]
             if self.proxy:
@@ -363,8 +365,8 @@ class Downloader:
                 }]
                 expected_ext = "mp3"
 
-            if playlist and config.MAX_PLAYLIST_ITEMS:
-                opts["playlist_items"] = f"1:{config.MAX_PLAYLIST_ITEMS}"
+            max_items = config.MAX_PLAYLIST_ITEMS or 20
+            opts["playlist_items"] = f"1:{max_items}"
 
             # Execute with automated cookie fallback
             info = self._run_extraction(opts, url, download=True)
@@ -405,7 +407,7 @@ class Downloader:
         opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
-            "noplaylist": not playlist,
+            "noplaylist": False if not ("youtube.com" in url or "youtu.be" in url) else True,
             "socket_timeout": 30,
             "skip_download": True,
             "extractor_args": _YOUTUBE_EXTRACTOR_ARGS,
@@ -514,11 +516,8 @@ class Downloader:
             # found no video, so the post genuinely has no playable
             # video (e.g. it's text-only, photos-only, or a poll/quote
             # of another post) — or the video was deleted.
-            return ("No downloadable video was found in this X (Twitter) "
-                    "post. This usually means the post only contains "
-                    "text, images, or a poll rather than a video, or the "
-                    "video was removed. Double-check the link points "
-                    "directly at the post containing the video.")
+            return ("No downloadable video was found in this post. "
+                    "This usually means the post only contains text, images, or a poll rather than media, or the media was removed.")
         if "age" in msg.lower() and ("confirm" in msg.lower() or "restrict" in msg.lower() or "sign in" in msg.lower()):
             # Age-gated content that even the tv/tv_embedded player
             # clients (tried first, see _YOUTUBE_EXTRACTOR_ARGS) could
