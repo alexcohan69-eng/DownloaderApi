@@ -26,13 +26,14 @@ from fastapi import (BackgroundTasks, Depends, FastAPI, Header, HTTPException,
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               PlainTextResponse, StreamingResponse)
+                               StreamingResponse)
 from pydantic import BaseModel, Field, ValidationError, validator
 
 from . import config, jobs, logbuffer
 from .downloader import (AUDIO_BITRATES, VIDEO_FORMATS, DownloadError,
                          Downloader, DownloadResult, MEDIA_TYPES)
 from .jobs import JobParams
+from .landing_page import LANDING_PAGE_HTML
 from .logs_page import LOGS_PAGE_HTML
 from .telegram import valid_token
 
@@ -237,19 +238,8 @@ def _fetch_info(req: InfoRequest) -> dict:
 # --------------------------------------------------------------------------
 
 @app.get("/", include_in_schema=False)
-def root() -> PlainTextResponse:
-    return PlainTextResponse(
-        "Universal Media Downloader API\n\n"
-        "Sync (returns the file bytes):\n"
-        "  GET /download?url=<url>&media_type=video|audio&quality=best&cookies=file.txt&playlist=false\n"
-        "  GET /info?url=<url>&cookies=file.txt\n"
-        "  POST variants accept the same fields as JSON.\n\n"
-        "Webhook (push, Cobalt-style — sends straight to Telegram):\n"
-        "  POST /jobs  {url, chat_id, bot_token, media_type, quality, cookies, playlist, caption}\n"
-        "  GET  /jobs/<job_id>   -> job status\n\n"
-        "Live logs (in-browser viewer):\n"
-        "  GET /logs   -> live-tailing log page (add ?key=... if YDL_LOGS_SECRET is set)\n"
-    )
+def root() -> HTMLResponse:
+    return HTMLResponse(LANDING_PAGE_HTML)
 
 
 @app.get("/download")
