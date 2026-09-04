@@ -334,6 +334,20 @@ def _serve_download(req: DownloadRequest, background: BackgroundTasks):
     return response
 
 
+@app.get("/cookies", include_in_schema=False)
+def list_cookies():
+    """List available cookie file names (not their contents) for the
+    web Playground's dropdown."""
+    try:
+        names = sorted(
+            p.name for p in config.COOKIES_DIR.iterdir()
+            if p.is_file() and not p.name.startswith(".")
+        )
+    except OSError:
+        names = []
+    return {"ok": True, "cookies": names}
+
+
 @app.get("/info")
 def info_get(
     url: str = Query(...),

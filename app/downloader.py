@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 import time
+import urllib.parse
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,6 +67,65 @@ MEDIA_TYPES = {"video", "audio"}
 _YOUTUBE_EXTRACTOR_ARGS = {
     "youtube": {"player_client": ["android", "web", "tv", "ios"]}
 }
+
+# Twitter/X's GraphQL API sometimes answers a perfectly normal tweet with
+# reason: "Suspended" when the *querying session* (i.e. the account behind
+# our cookies/twitter.txt) has itself been locked, limited, or suspended —
+# not because the tweet's author is actually suspended. yt-dlp surfaces
+# that verbatim as "[twitter] <id>: Suspended.". The fix is to retry the
+# same URL as a logged-out guest (dropping our cookies) and, if that still
+# fails, force the public syndication API, both of which sidestep the
+# broken session entirely.
+_TWITTER_HOSTS = {
+    "twitter.com", "www.twitter.com", "mobile.twitter.com", "m.twitter.com",
+    "x.com", "www.x.com", "mobile.x.com", "m.x.com",
+}
+
+
+def _is_twitter_url(url: str) -> bool:
+    try:
+        return urllib.parse.urlparse(url).netloc.lower() in _TWITTER_HOSTS
+    except Exception:
+        return False
+
+
+def _is_suspended_error(exc: BaseException) -> bool:
+    msg = str(getattr(exc, "msg", None) or exc).lower()
+    return "suspend" in msg
+
+
+def _extract_with_fallback(base_opts: dict[str, Any], url: str,
+                            download: bool) -> Any:
+    """Run yt-dlp's extraction, retrying Twitter's false "Suspended" error.
+
+    Only kicks in for twitter.com/x.com URLs that were fetched with a
+    cookiefile; other sites and errors behave exactly as before.
+    """
+    attempts = [base_opts]
+    if base_opts.get("cookiefile") and _is_twitter_url(url):
+        guest_opts = {k: v for k, v in base_opts.items() if k != "cookiefile"}
+        attempts.append(guest_opts)
+        syndication_opts = dict(guest_opts)
+        syndication_opts["extractor_args"] = {
+            **guest_opts.get("extractor_args", {}),
+            "twitter": {"api": ["syndication"]},
+        }
+        attempts.append(syndication_opts)
+
+    last_exc: Optional[yt_dlp.utils.DownloadError] = None
+    for i, opts in enumerate(attempts):
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=download)
+        except yt_dlp.utils.DownloadError as e:
+            last_exc = e
+            is_last = i == len(attempts) - 1
+            if is_last or not _is_suspended_error(e):
+                raise
+            log.warning("twitter reported a false 'Suspended' error using the "
+                       "authenticated session for %s; retrying as guest (attempt %d/%d)",
+                       url, i + 2, len(attempts))
+    raise last_exc  # pragma: no cover - unreachable, loop always returns or raises
 
 
 def _summarize_formats(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -248,8 +308,7 @@ class Downloader:
             if playlist and config.MAX_PLAYLIST_ITEMS:
                 opts["playlist_items"] = f"1:{config.MAX_PLAYLIST_ITEMS}"
 
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
+            info = _extract_with_fallback(opts, url, download=True)
 
             files = self._final_files(dl_dir, expected_ext)
             if not files:
@@ -298,8 +357,7 @@ class Downloader:
             opts["proxy"] = self.proxy
 
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                base = ydl.extract_info(url, download=False)
+            base = _extract_with_fallback(opts, url, download=False)
         except yt_dlp.utils.DownloadError as e:
             raise DownloadError(self._friendly_error(e), cause=e)
 
@@ -382,6 +440,16 @@ class Downloader:
                     "bot (this is common for server IPs). Add a YouTube "
                     "cookies file to the cookies/ folder and pass its name "
                     "as the 'cookies' field — see README Part 3.")
+        if "suspend" in msg.lower():
+            # We already retried this as a logged-out guest (see
+            # _extract_with_fallback) and it still failed, so the tweet
+            # itself really is gone — or, for non-Twitter callers, this is
+            # a genuine "Suspended" response.
+            return ("Twitter/X says this tweet is unavailable because the "
+                    "account is suspended. If you believe this is wrong, "
+                    "the session in cookies/twitter.txt may itself be "
+                    "suspended or locked — replace it with a fresh, "
+                    "logged-in export and try again.")
         exc = getattr(e, "exc_info", None)
         unsafe = ("unable to extract", "does not support", "no player",
                   "requested format", "unable to download video data")
