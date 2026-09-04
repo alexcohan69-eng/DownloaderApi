@@ -1,613 +1,376 @@
 # Universal Media Downloader
 
-A **universal media downloader that runs as an HTTP API**, built on
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) + FastAPI.
+A tiny web service that downloads media from almost any site (YouTube, Instagram,
+TikTok, Twitter/X, Facebook, and [1000+ more](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md))
+using [yt-dlp](https://github.com/yt-dlp/yt-dlp), and delivers it **straight into
+a Telegram chat** — exactly like [Cobalt](https://cobalt.tools), but self-hosted
+and controlled by your own bot.
 
-Give it any media URL (YouTube, TikTok, Instagram, Twitter/X, Reddit, Vimeo,
-Twitch, SoundCloud, Pinterest, …) and it downloads the media and **returns the
-raw file bytes** to you. It was designed for a **Telegram bot**: the bot sends
-the URL → the API downloads the media → the bot forwards the file to the user.
-
-```
-Telegram bot ──URL──▶ Downloader API ──yt-dlp──▶ media file
-        ▲                                        │
-        └────────────── raw bytes ◀──────────────┘
-```
+You send it a URL over a webhook. It downloads the media in the background and
+sends the finished video/audio into the chat for you. The file never passes
+through your bot — so your bot stays fast and cheap.
 
 ---
 
-## Use this API in any project
-
-There's a live instance deployed at:
+## How it works
 
 ```
-https://downloaderapi-mp8v.onrender.com
+  Your Telegram bot                 This service (on Render)              Telegram
+  ─────────────────                 ────────────────────────             ────────
+        │                                     │                             │
+   user sends a URL                           │                             │
+        │                                     │                             │
+        │   POST /jobs                        │                             │
+        │   { url, chat_id, bot_token } ─────▶ │                             │
+        │                                     │                             │
+        │ ◀──── 202 Accepted (instant) ────── │                             │
+        │                                     │                             │
+        │                          downloads with yt-dlp                    │
+        │                                     │                             │
+        │                                     │  sendVideo / sendAudio ────▶ │
+        │                                     │                             │
+        │                                     │            file appears in chat
 ```
 
-The API is language-agnostic. You send it a URL; it returns **the media file
-bytes** in the response body. No SDK, no parsing, no auth keys.
+Your bot's only job is to fire one small request and forget about it. This
+service does the heavy lifting and talks to Telegram directly.
 
-**The recipe is always the same, in any language:**
+**Two ways to call it:**
 
-1. *(Optional)* call `/info?url=<url>` first for a preview — title, thumbnail,
-   duration, uploader — without downloading anything.
-2. Call `/download?url=<url>&media_type=<video|audio>&quality=<...>`.
-3. The response body **is the file** — save it to disk or upload the raw bytes
-   straight to Telegram / a chat / your storage.
-4. Read the response headers for filenames & captions: `X-File-Name`,
-   `X-Media-Type`, `X-Title`, `X-Duration`, `X-Thumbnail`, `X-File-Count`
-   (playlist ZIPs).
-5. Errors always come back as JSON — `{"ok": false, "error": "<message>"}` —
-   with HTTP 400/422/429.
+| Mode | Endpoint | Who uploads to Telegram? | Best for |
+| --- | --- | --- | --- |
+| **Webhook (push)** ⭐ | `POST /jobs` | This service | Telegram bots — recommended |
+| **Direct (pull)** | `GET /download` | You do | Scripts, testing, non-Telegram use |
 
-The simplest possible call (`curl`):
-
-```bash
-curl -L -o out.mp4 \
-  "https://downloaderapi-mp8v.onrender.com/download?url=https%3A%2F%2Fyoutu.be%2FdQw4w9WgXcQ&quality=720p"
-```
-
-**Notes for any caller:**
-
-- **URL-encode the `url` value** (your HTTP client usually does this for query
-  objects — `curl` does not).
-- **Use a long timeout** — downloads can take minutes (`>= 5 min` is safe).
-- The Render free plan **cold-starts** after ~15 min idle; the first request
-  after that can take 30–60 s.
-- `<quality>` for video: `best` / `worst` / `4320p`–`360p`.
-  `<quality>` for audio: target kbps — `320` `256` `192` `128` `96` `64` `worst`.
-- `playlist=true` → download every entry (capped at 20) and get a `.zip`.
-- `cookies` param → filename of a cookie file inside `./cookies/` on the server
-  (for sites that need login).
-
-### Cookies — where to add them, and how
-
-Some sites (Instagram, private Twitter/X, age-restricted content, Vimeo, your
-Patreon, …) refuse downloads without **your login cookies**. The server only
-reads cookie files from one place: its `./cookies/` folder. Pass the file's
-name as the `cookies` parameter.
-
-**1. Export your cookies** as a Netscape-format `.txt` file:
-
-- Install a browser extension like **"Get cookies.txt LOCALLY"** (Chrome/Firefox
-  both have it).
-- Open the site you need cookies for (make sure you're logged in).
-- Click the extension → **Export** → save something like `youtube.txt`.
-
-Only that one file needs to exist — one cookie file can hold cookies for many
-domains.
-
-**2. Put it in `./cookies/`** (this is the project folder, wherever this API is
-running):
-
-```bash
-mv ~/Downloads/youtube.txt ./cookies/youtube.txt
-# on the deployed instance, commit & push it:
-git add cookies/youtube.txt
-git commit -m "cookies: add youtube"
-git push
-```
-
-On **Render**, cookie files are **baked into the repo** (the server's disk is
-ephemeral). Committing and pushing redeploys automatically
-(`autoDeploy: true`) and the file lands in `./cookies/`.
-
-**3. Pass the filename in every request** that needs it:
-
-```bash
-curl -L -o out.mp4 "https://downloaderapi-mp8v.onrender.com/download?url=<restricted-url>&cookies=youtube.txt"
-# in code:  params.add("cookies", "youtube.txt")
-```
-
-Safety notes:
-
-- **Only a plain filename** inside `./cookies/` is accepted — you can pass
-  `youtube.txt`, never `../secret.txt` or an absolute path.
-- Cookie files contain **login tokens** — keep your repo private, and only the
-  `*.txt` files are committed (see `.gitignore`; other files in `cookies/` are
-  ignored).
-
-Example calls for Python, Node.js, PHP, **Next.js**, and a Telegram bot are in
-[Calling from your own project](#calling-from-your-own-project) below.
+The webhook mode is what you want for a Telegram bot. The direct mode simply
+returns the raw file bytes to whoever called it.
 
 ---
 
-## Table of contents
+## Part 1 — Deploy to Render
 
-1. [Use this API in any project](#use-this-api-in-any-project)
-2. [Features](#features)
-3. [Requirements](#requirements)
-4. [Installation & running](#installation--running)
-5. [Quick test](#quick-test)
-6. [API reference](#api-reference)
-7. [Calling from your own project](#calling-from-your-own-project)
-8. [Telegram bot integration](#telegram-bot-integration)
-9. [Cookies](#cookies)
-10. [Configuration](#configuration)
-11. [Deploy to Render](#deploy-to-render)
-12. [Project layout](#project-layout)
-13. [Notes & limits](#notes--limits)
+You need a [GitHub](https://github.com) account and a free
+[Render](https://render.com) account.
 
----
-
-## Features
-
-- **Download from almost any site** — everything yt-dlp supports
-- **Video downloads** merged into a single MP4, preferring **H.264 + AAC** (the
-  codec pair every Telegram client plays)
-- **Audio downloads** converted to **MP3** (choose bitrate)
-- **Playlist support** — bundle all entries into a ZIP
-- **Cookies** — pass a Netscape cookie file name for sites that need login
-- **Info endpoint** — get title/duration/thumbnail/formats without downloading
-- **Safe by design** — media type and quality go through strict allowlists, so
-  callers can *never* inject yt-dlp flags or read arbitrary files
-- **Self-cleaning** — temp files removed after every response
-- **Plug-and-play for bots** — raw bytes out, no auth keys to manage
-
----
-
-## Requirements
-
-- Python 3.9+
-- `ffmpeg` in PATH (needed for merging video+audio and for audio→MP3)
-- `yt-dlp`, `fastapi`, `uvicorn`, `pydantic`, `python-multipart`
-
-Install ffmpeg if you don't have it:
+### Step 1 — Put this project on GitHub
 
 ```bash
-# Debian / Ubuntu / PRoot
-apt install ffmpeg
-
-# Termux
-pkg install ffmpeg
+git init
+git add .
+git commit -m "Media downloader"
+git branch -M main
+git remote add origin https://github.com/YOUR_NAME/YOUR_REPO.git
+git push -u origin main
 ```
+
+### Step 2 — Create the service on Render
+
+1. Go to the [Render dashboard](https://dashboard.render.com) → **New +** → **Blueprint**.
+2. Connect your GitHub account and pick this repository.
+3. Render reads the included [`render.yaml`](render.yaml) and sets everything up
+   automatically — it installs **ffmpeg** (needed to merge video + audio) and
+   your Python dependencies.
+4. Click **Apply**. Wait a few minutes for the first build.
+
+When it's done, Render gives you a public URL like:
+
+```
+https://media-downloader-xxxx.onrender.com
+```
+
+That URL is your downloader. Open it in a browser — you should see a short help
+page. That means it's live.
+
+> **Free plan note:** Render's free services **sleep after 15 minutes** of no
+> traffic and take ~30–60 seconds to wake up on the next request. The first
+> download after a nap will feel slow. Upgrade to a paid plan to keep it always
+> on.
+
+### Step 3 — Protect it with a secret (recommended)
+
+Your URL is public, so anyone who finds it could use your downloader. Lock it to
+just your bot with a shared password:
+
+1. In Render → your service → **Environment** → **Add Environment Variable**.
+2. Add `YDL_WEBHOOK_SECRET` = *(any long random string you make up)*.
+3. Save. Render redeploys automatically.
+
+Now every request must include that secret (shown in Part 2), or it's rejected.
 
 ---
 
-## Installation & running
+## Part 2 — Use it from your Telegram bot project
 
-```bash
-git clone <your-repo-url> && cd downloader   # or just cd into the project dir
+This is the main use case. In **your bot project**, when a user sends a URL, make
+one HTTP request to this downloader. That's it.
 
-python -m pip install -r requirements.txt    # use your project venv if you have one
-chmod +x run.sh
-./run.sh                                     # → http://0.0.0.0:8000
-```
+### The request
 
-You should see:
+`POST https://your-downloader.onrender.com/jobs`
 
-```
-INFO:     Started server process [28488]
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-```
+Send a JSON body with these fields:
 
-Run it in the background if you prefer:
+| Field | Required | Example | What it does |
+| --- | :---: | --- | --- |
+| `url` | ✅ | `"https://youtu.be/abc"` | The media link to download |
+| `chat_id` | ✅ | `"123456789"` | The Telegram chat to deliver into |
+| `bot_token` | ✅ | `"123:ABC..."` | Your bot's token (used to send the file) |
+| `media_type` | | `"video"` or `"audio"` | Video (default) or audio-only |
+| `quality` | | `"720p"` / `"320"` | Video: `best`,`1080p`,`720p`,`480p`,`360p`… · Audio: `320`,`192`,`128`… |
+| `cookies` | | `"youtube.txt"` | Cookie file for logged-in sites (see Part 3) |
+| `playlist` | | `true` | Download a whole playlist and send it as a `.zip` |
+| `caption` | | `"Here you go!"` | Custom caption on the delivered file |
 
-```bash
-nohup ./run.sh > /tmp/dl_api.log 2>&1 &
-```
+> **About `bot_token`:** you pass your bot's token so this service can send the
+> file *as your bot*, into the same chat your user is talking to. Send the
+> request over HTTPS (Render gives you HTTPS automatically) so it stays private.
 
-> **Note on `requirements.txt`:** it is pinned to versions that build cleanly
-> on machines without a Rust toolchain (pydantic v1, pure-Python uvicorn).
-> On a normal machine you can safely use the latest versions instead.
+### The response
 
----
-
-## Quick test
-
-```bash
-# 1. Is it alive?
-curl "http://127.0.0.1:8000/"
-
-# 2. Preview metadata (no download)
-curl "http://127.0.0.1:8000/info?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-
-# 3. Download best video → file bytes
-curl -L -o out.mp4 "http://127.0.0.1:8000/download?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-
-# 4. Audio as MP3 at 128 kbps
-curl -L -o out.mp3 "http://127.0.0.1:8000/download?url=https://youtu.be/dQw4w9WgXcQ&media_type=audio&quality=128"
-
-# 5. Video capped at 720p
-curl -L -o out.mp4 "http://127.0.0.1:8000/download?url=https://youtu.be/dQw4w9WgXcQ&quality=720p"
-```
-
-> Remember: query values must be URL-encoded. The `-L` follows redirects
-> (helpers that return 307, e.g. `youtu.be`).
-
----
-
-## API reference
-
-### `GET | POST /download` — download media, return the file
-
-Query params (GET) / JSON body (POST):
-
-| Parameter   | Values                                                               | Default  |
-|-------------|----------------------------------------------------------------------|----------|
-| `url`       | any http(s) URL yt-dlp supports                                      | —        |
-| `media_type`| `video` \| `audio`                                                   | `video`  |
-| `quality`   | video: `best` `worst` `4320p`–`360p`<br>audio: `best` `320` `256` `192` `128` `96` `64` (kbps) | `best` |
-| `cookies`   | file name of a cookie file inside `./cookies/` (optional)            | none     |
-| `playlist`  | `true` → download all entries (capped at 20) and return a `.zip`     | `false`  |
-
-**Success** → HTTP 200, body is the media file.
-
-Useful response headers:
-
-| Header          | Meaning                                          |
-|-----------------|--------------------------------------------------|
-| `Content-Type`  | `video/mp4`, `audio/mpeg`, `application/zip`, …  |
-| `X-File-Name`   | safe filename to save / upload as                 |
-| `X-Media-Type`  | `video` or `audio`                                |
-| `X-Title`       | media title (for captions)                        |
-| `X-Duration`    | duration in seconds                               |
-| `X-Thumbnail`   | thumbnail URL                                     |
-| `X-File-Count`  | number of files (only for playlist ZIPs)          |
-
-**Errors** → JSON: `{"ok": false, "error": "<message>"}` with HTTP 400/422/429.
-
-### `GET | POST /info` — metadata only, no download
-
-Returns:
+You get `202 Accepted` **instantly** — before the download even starts:
 
 ```json
-{
-  "ok": true,
-  "is_playlist": false,
-  "title": "Rick Astley - Never Gonna Give You Up (Official Video)",
-  "duration": 213,
-  "thumbnail": "https://i.ytimg.com/vi/.../hqdefault.jpg",
-  "uploader": "Rick Astley",
-  "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-  "formats": [ { "format_id": "137", "ext": "mp4", "resolution": "1920x1080", ... } ]
-}
+{ "ok": true, "job_id": "c71196284bcd4f8a", "status": "downloading" }
 ```
 
----
+Your bot is now done. The user will see a live "Downloading…" message in their
+chat, and then the finished video or audio a moment later.
 
-## Calling from your own project
+### Copy-paste examples
 
-The API returns raw bytes — whatever language your project is in, you HTTP-GET
-the URL (URL-encoded! set a long timeout!) and save/forward the bytes. The same
-pattern applies to your Telegram bot.
-
-### Python (requests)
+**Python** (drop this into your existing bot):
 
 ```python
 import requests
 
-API = "http://127.0.0.1:8000"
-url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+DOWNLOADER = "https://your-downloader.onrender.com"
+SECRET = "your-webhook-secret"   # the one you set on Render (omit if none)
 
-# Optional: preview metadata
-info = requests.get(f"{API}/info", params={"url": url}, timeout=60).json()
-
-# Download the actual file
-resp = requests.get(f"{API}/download",
-                    params={"url": url, "media_type": "video", "quality": "720p",
-                            "cookies": "site.txt"},
-                    timeout=1800)          # large files take a while
-if resp.status_code != 200:
-    raise RuntimeError(resp.json().get("error"))
-
-filename = resp.headers.get("X-File-Name", "media.mp4")
-open(filename, "wb").write(resp.content)
+def download_to_chat(url: str, chat_id: int, bot_token: str, audio=False):
+    resp = requests.post(
+        f"{DOWNLOADER}/jobs",
+        json={
+            "url": url,
+            "chat_id": str(chat_id),
+            "bot_token": bot_token,
+            "media_type": "audio" if audio else "video",
+            "quality": "720p",
+        },
+        headers={"X-Webhook-Secret": SECRET},   # remove if you set no secret
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()   # {"ok": True, "job_id": "...", "status": "downloading"}
 ```
 
-### Node.js
+**Node.js / JavaScript:**
 
 ```js
-const url = "https://youtu.be/dQw4w9WgXcQ";
-const params = new URLSearchParams({ url, media_type: "video", quality: "720p" });
-const resp = await fetch(`${API}/download?${params}`);
-const buffer = Buffer.from(await resp.arrayBuffer());    // ← upload this to Telegram
-const filename = resp.headers.get("x-file-name") || "media.mp4";
-```
-
-### Next.js (App Router)
-
-Best done as a **route-handler proxy** — the browser hits your own `/api/download`,
-the server streams the file from the downloader. Keeps the downloader URL in a
-server-only env var and out of the client bundle:
-
-`.env.local`:
-```bash
-DOWNLOADER_API=https://downloaderapi-mp8v.onrender.com
-```
-
-`app/api/download/route.ts`:
-```ts
-export const dynamic = "force-dynamic";
-// Vercel: export const maxDuration = 900;  // downloads take minutes
-
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const params = new URLSearchParams({
-    url: searchParams.get("url") ?? "",
-    media_type: searchParams.get("media_type") ?? "video",
-    quality: searchParams.get("quality") ?? "best",
+async function downloadToChat(url, chatId, botToken, audio = false) {
+  const res = await fetch("https://your-downloader.onrender.com/jobs", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Webhook-Secret": "your-webhook-secret", // remove if you set no secret
+    },
+    body: JSON.stringify({
+      url,
+      chat_id: String(chatId),
+      bot_token: botToken,
+      media_type: audio ? "audio" : "video",
+      quality: "720p",
+    }),
   });
-  const cookies = searchParams.get("cookies");
-  if (cookies) params.set("cookies", cookies);
-  if (searchParams.get("playlist") === "true") params.set("playlist", "true");
-
-  const upstream = await fetch(`${process.env.DOWNLOADER_API}/download?${params}`,
-    { cache: "no-store", redirect: "follow" });
-
-  if (!upstream.ok) {
-    const err = await upstream.json().catch(() => ({ error: "Download failed" }));
-    return Response.json({ ok: false, error: err.error }, { status: upstream.status });
-  }
-
-  const headers = new Headers();
-  headers.set("Content-Type", upstream.headers.get("content-type") ?? "application/octet-stream");
-  const fileName = upstream.headers.get("x-file-name");
-  if (fileName) headers.set("Content-Disposition", `attachment; filename="${fileName}"`);
-  for (const h of ["x-file-name", "x-media-type", "x-title", "x-duration", "x-thumbnail", "x-file-count"]) {
-    const v = upstream.headers.get(h);
-    if (v) headers.set(h, v);
-  }
-  return new Response(upstream.body, { headers });  // streams — no RAM blowup
+  return res.json(); // { ok: true, job_id: "...", status: "downloading" }
 }
 ```
 
-Client component that saves the file:
-```tsx
-"use client";
-export default function DownloadForm({ url }: { url: string }) {
-  return (
-    <form onSubmit={async (e) => {
-      e.preventDefault();
-      const res = await fetch(`/api/download?url=${encodeURIComponent(url)}&media_type=video&quality=720p`);
-      if (!res.ok) return alert((await res.json()).error);
-      const blob = await res.blob();                       // → trigger save / upload
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = res.headers.get("x-file-name") ?? "media.mp4";
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }}>
-      <button>Download</button>
-    </form>
-  );
+**curl** (to test from a terminal):
+
+```bash
+curl -X POST https://your-downloader.onrender.com/jobs \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: your-webhook-secret" \
+  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","chat_id":"123456789","bot_token":"123:ABC","quality":"720p"}'
+```
+
+### A complete example bot
+
+A full, ready-to-run bot is included at
+[`examples/telegram_bot_webhook.py`](examples/telegram_bot_webhook.py). It listens
+for URLs and fires the webhook — copy its `send_job()` logic into your own bot.
+
+### Checking on a job (optional)
+
+You usually don't need to, but you can poll a job's progress:
+
+```
+GET https://your-downloader.onrender.com/jobs/<job_id>
+```
+
+```json
+{ "ok": true, "job_id": "c71196284bcd4f8a", "status": "done", "detail": "Delivered" }
+```
+
+Status goes: `queued` → `downloading` → `uploading` → `done` (or `error`).
+
+---
+
+## Part 3 — Adding cookies (for logged-in / age-restricted sites)
+
+Some videos need you to be **logged in** — private videos, age-restricted
+YouTube, members-only content, Instagram, etc. yt-dlp handles this with a
+**cookies file**: a text export of your browser's login for that site.
+
+### Step 1 — Export cookies from your browser
+
+Install a browser extension that exports cookies in **Netscape format**:
+
+- Chrome/Edge: **"Get cookies.txt LOCALLY"**
+- Firefox: **"cookies.txt"**
+
+Then:
+
+1. Log in to the site (e.g. YouTube) in your browser as normal.
+2. Click the extension while on that site.
+3. **Export** → it downloads a file like `cookies.txt`.
+
+> Tip: use a throwaway/secondary account for this — you're handing its login to
+> the server.
+
+### Step 2 — Put the file in the `cookies/` folder
+
+Rename it to something clear and drop it into this project's `cookies/` folder,
+one file per site:
+
+```
+cookies/
+├── youtube.txt
+├── instagram.txt
+└── twitter.txt
+```
+
+### Step 3 — Commit and push so Render gets it
+
+The cookie files are committed with your repo **on purpose**, so Render can read
+them (see [`.gitignore`](.gitignore) — it allows `cookies/*.txt`):
+
+```bash
+git add cookies/youtube.txt
+git commit -m "Add YouTube cookies"
+git push
+```
+
+Render redeploys and the file is now available on the server.
+
+> ⚠️ **Keep your repo PRIVATE.** Cookie files are as sensitive as passwords —
+> anyone with them can access your logged-in account. Never push cookies to a
+> public repository.
+
+### Step 4 — Reference the file in your request
+
+Pass the **file name** (not a path) in the `cookies` field:
+
+```json
+{
+  "url": "https://youtube.com/watch?v=PRIVATE",
+  "chat_id": "123456789",
+  "bot_token": "123:ABC",
+  "cookies": "youtube.txt"
 }
 ```
 
-The API's CORS is open (`allow_origins: ["*"]`), so calling the Render URL
-directly from the browser also works — the proxy is just cleaner.
+The service safely looks up `cookies/youtube.txt` and uses it for that download.
 
-### PHP
-
-```php
-$u = 'https://youtu.be/dQw4w9WgXcQ';
-$resp = file_get_contents("http://127.0.0.1:8000/download?url=" . urlencode($u)
-        . "&media_type=video&quality=720p", false, stream_context_create([
-    'http' => ['method' => 'GET', 'timeout' => 1800],
-]));
-file_put_contents('out.mp4', $resp);
-```
-
-### curl
-
-```bash
-curl -L -o out.mp4 "http://127.0.0.1:8000/download?url=https%3A%2F%2Fyoutu.be%2FdQw4w9WgXcQ&quality=720p"
-```
+> Cookies expire over time. If a site starts failing with a login error, just
+> re-export the cookies and push the updated file.
 
 ---
 
-## Telegram bot integration
+## Direct mode (optional): `GET /download`
 
-The intended flow:
-
-1. User sends a URL to the bot
-2. Bot calls `/info` → shows a preview caption
-3. Bot calls `/download` → gets raw bytes
-4. Bot uploads the bytes straight to Telegram
-
-Minimal bot handler (Python `python-telegram-bot` + `requests`):
-
-```python
-resp = requests.get("http://127.0.0.1:8000/download",
-                    params={"url": user_url, "media_type": "video", "quality": "best"})
-if resp.status_code == 200:
-    await update.message.reply_video(video=resp.content)   # raw bytes → Telegram
-    # or: reply_audio(resp.content)                        # for media_type=audio
-    # or: reply_document(resp.content)                     # for playlist ZIPs
-else:
-    await update.message.reply_text(resp.json().get("error", "Download failed"))
-```
-
-> If your bot runs on a **different machine** than the API, put the API's
-> reachable IP/hostname in place of `127.0.0.1` and open port 8000 in the
-> firewall/security group.
-
-A complete, runnable reference bot (with preview captions, audio / quality
-commands) is at **`examples/telegram_bot.py`**:
+If you want the raw file instead of Telegram delivery (for scripts or testing),
+call `/download` and it streams the file back to you:
 
 ```bash
-pip install python-telegram-bot requests
-export BOT_TOKEN="123456:ABC..."
-export DOWNLOADER_API="http://127.0.0.1:8000"
-python examples/telegram_bot.py
+# Save a 720p video to a file
+curl -L "https://your-downloader.onrender.com/download?url=https://youtu.be/abc&quality=720p" -o video.mp4
+
+# Get info about a link without downloading
+curl "https://your-downloader.onrender.com/info?url=https://youtu.be/abc"
 ```
+
+`/download` accepts the same `url`, `media_type`, `quality`, `cookies`, and
+`playlist` fields as query parameters or as a JSON `POST` body. Handy response
+headers include `X-File-Name`, `X-Title`, and `X-Duration`. A full example bot
+that uses this pull mode lives in [`examples/telegram_bot.py`](examples/telegram_bot.py).
 
 ---
 
-## Cookies
+## Configuration (environment variables)
 
-Some sites (Instagram, private Twitter/X, age-restricted content, Vimeo, …)
-require your login cookies. The full how-to (export → where to place → how to
-pass) is in [Use this API in any project → Cookies](#cookies--where-to-add-them-and-how).
-Short version:
+All optional — the defaults are sensible. Set any of these in Render →
+**Environment**.
 
-```bash
-# 1. Export with a browser extension like "Get cookies.txt LOCALLY"
-mv ~/Downloads/youtube.com_cookies.txt ./cookies/youtube.txt
-
-# 2. On a deployed instance, commit & push (auto-redeploy):
-git add cookies/youtube.txt && git commit -m "cookies" && git push
-
-# 3. Reference it per request:
-curl -L -o out.mp4 \
-  "http://127.0.0.1:8000/download?url=<private-or-restricted-url>&cookies=youtube.txt"
-```
-
-Safety: only a **plain filename** inside `./cookies/` is accepted — path
-traversal and arbitrary file reads are rejected. One cookie file may hold
-cookies for many domains. Files in `cookies/` are committed (only `*.txt`,
-see `.gitignore`), so they survive deploys — but they contain login tokens,
-so keep the repo private.
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `YDL_WEBHOOK_SECRET` | *(none)* | Password required on `/jobs`. **Set this.** |
+| `YDL_MAX_UPLOAD_MB` | `50` | Max file size to send to Telegram (see below) |
+| `YDL_MAX_CONCURRENT_JOBS` | `2` | How many downloads run at once (keep low on free plan) |
+| `YDL_MAX_PLAYLIST_ITEMS` | `20` | Max videos to grab from a playlist |
+| `YDL_TIMEOUT` | `600` | Max seconds for one download |
+| `YDL_RATE_LIMIT_MAX` | `10` | Max requests per IP per minute (`0` = off) |
+| `YDL_PROXY` | *(none)* | Route yt-dlp through a proxy, e.g. `socks5://host:1080` |
+| `TELEGRAM_API_BASE` | `https://api.telegram.org` | Point at a self-hosted Bot API server for big files |
 
 ---
 
-## Configuration
+## The 50 MB limit (important)
 
-Everything is configurable via environment variables:
+Telegram's public Bot API only lets bots upload files up to **50 MB**. If a
+download is bigger, this service won't fail silently — it sends a clear message
+to the chat telling the user to pick a lower quality (e.g. `480p`) or audio-only.
 
-| Variable                     | Default            | Meaning                                  |
-|------------------------------|--------------------|------------------------------------------|
-| `YDL_HOST` / `YDL_PORT`      | `0.0.0.0` / `8000` | Bind address / port                      |
-| `YDL_COOKIES_DIR`            | `./cookies`        | Cookie file directory                    |
-| `YDL_DOWNLOADS_DIR`          | `./downloads`      | Temp download staging                    |
-| `YDL_TIMEOUT`                | `600`              | Max seconds for one download             |
-| `YDL_MAX_PLAYLIST_ITEMS`     | `20`               | Cap for `playlist=true`                  |
-| `YDL_TEMP_LIFETIME`          | `3600`             | Stale temp-dir purge age at startup (s)  |
-| `YDL_PROXY`                  | —                  | Proxy for yt-dlp (e.g. `socks5://…`)     |
-| `YDL_RATE_LIMIT_MAX` / `YDL_RATE_LIMIT_WINDOW` | `10` / `60` | Per-IP rate limit (set max to `0` to disable) |
-
-Example:
-
-```bash
-YDL_PORT=9000 YDL_PROXY="socks5://127.0.0.1:1080" ./run.sh
-```
+**Need bigger files (up to ~2 GB)?** Run your own
+[telegram-bot-api](https://github.com/tdlib/telegram-bot-api) server and point
+`TELEGRAM_API_BASE` at it, then raise `YDL_MAX_UPLOAD_MB` (e.g. to `2000`).
 
 ---
 
-## Deploy to Render
-
-The repo ships with a **Render Blueprint** (`render.yaml`) and an optional
-**Dockerfile** so you can deploy this as a web service in a few clicks.
-
-### 1. Put it in a git repo
+## Run it locally (for testing)
 
 ```bash
-cd downloader
-git init
-git add .
-git commit -m "media downloader"
-git remote add origin <your-repo-url>
-git push -u origin main
+pip install -r requirements.txt   # you also need ffmpeg installed
+./start.sh                        # serves on http://127.0.0.1:8000
 ```
 
-> **Commit your cookie files.** Render's filesystem is ephemeral — it is
-> recreated from the repo on every deploy, and *any* file you upload through the
-> dashboard is lost on the next deploy. So your Netscape cookie files in
-> `./cookies/*.txt` (e.g. `youtube.txt`) are **intentionally committed to the
-> repo** (see `.gitignore`), and the deployed instance reads them from
-> `./cookies/` exactly like locally. Update a cookie later? Replace the file,
-> commit, and push — Render redeploys automatically (`autoDeploy: true`).
->
-> `cookie.txt` files contain login tokens — keep the repo private, or commit
-> only the sites you actually need.
-
-### 2. Deploy via Blueprint (recommended)
-
-1. Render dashboard → **New+** → **Blueprint**.
-2. Select your repo.
-3. Render reads `render.yaml` and creates the `media-downloader` web service.
-4. Pick a **plan** (free / starter / pro) and **region** in the service settings.
-5. Deploy. When the deploy finishes, open `https://media-downloader.onrender.com/`
-   and you should see the text help page.
-
-The Blueprint takes care of:
-
-- installing **ffmpeg** (required for video merging and MP3 conversion)
-- installing `requirements.txt`
-- launching via `./start.sh` (uses Render's injected `$PORT`)
-- a health check on `/` so Render knows when the service is up
-- setting `PYTHON_VERSION=3.12.0`
-
-Optional knobs (`YDL_TIMEOUT`, `YDL_MAX_PLAYLIST_ITEMS`,
-`YDL_RATE_LIMIT_MAX`, …) are commented out in `render.yaml` — uncomment to set
-them. There are **no cookie-related environment variables**: cookies come from
-the committed `./cookies/*.txt` files.
-
-### Alternative: manual web service
-
-Same repo, but: **New+** → **Web Service** → pick the repo → choose
-**Python** runtime → paste these two commands:
-
-- Build: `pip install -r requirements.txt`
-- Start: `./start.sh`
-
-and add env vars `PYTHON_VERSION=3.12.0` and `PYTHONUNBUFFERED=1`. (You still
-need ffmpeg — either use the Docker path or add the `apt-get install ffmpeg`
-step to the build command.)
-
-### Alternative: Docker
-
-Set the service **Runtime** to **Docker** (the repo's `Dockerfile` is used).
-This gives you a byte-identical image locally and in production. Note: with
-Docker, your cookies are baked into the image, so updating them requires a
-rebuild + redeploy.
-
-### Connecting your bot
-
-Point your bot at `https://media-downloader.onrender.com` (no port needed):
-
-```bash
-export DOWNLOADER_API="https://media-downloader.onrender.com"
-python examples/telegram_bot.py
-```
-
-### Render caveats
-
-- **Free plan spin-down**: after ~15 min idle the service sleeps; the first
-  request after that pays a 30–60 s cold start. A keep-alive ping from your bot
-  server (or a paid plan) avoids it.
-- **Ephemeral disk**: fine here — downloads are staged in `./downloads/` and
-  deleted after each response. Just remember cookies live in the repo, not on
-  the disk.
-- **Timeouts**: downloads can take minutes; make your caller's timeout generous,
-  and if you need more than Render's web-service limits, raise
-  `YDL_TIMEOUT` and/or size/keep-alive limits.
-- **No auth**: the API is open by design (only your bot should call it). Keep
-  the service URL private, or put a reverse proxy / auth / Cloudflare in front
-  if it leaks.
+Then send a test job to `http://127.0.0.1:8000/jobs`. Install ffmpeg first if you
+don't have it (`apt install ffmpeg`, or `pkg install ffmpeg` on Termux).
 
 ---
 
 ## Project layout
 
 ```
-downloader/
-├── app/
-│   ├── __init__.py
-│   ├── main.py          # FastAPI routes, validation, cleanup
-│   ├── downloader.py    # yt-dlp wrapper + format allowlists
-│   └── config.py        # settings
-├── cookies/             # drop Netscape cookie files here
-├── downloads/           # temp staging (auto-purged)
-├── examples/
-│   └── telegram_bot.py  # reference Telegram bot
-├── run.sh               # start script
-├── requirements.txt
-└── README.md
+app/
+├── main.py        FastAPI app + all the endpoints
+├── downloader.py  yt-dlp wrapper (with safety allowlists)
+├── jobs.py        background job runner for the webhook flow
+├── telegram.py    minimal Telegram Bot API client
+└── config.py      all settings / environment variables
+cookies/           your Netscape cookie files (*.txt)
+examples/          ready-to-run example Telegram bots
+render.yaml        Render deploy blueprint
+Dockerfile         optional Docker deploy
+start.sh           server entrypoint
 ```
 
 ---
 
-## Notes & limits
+## Security notes
 
-- **No arbitrary yt-dlp options pass through** — media type and quality are
-  mapped through allowlists, so callers can't inject flags.
-- Downloads **stream** (no full buffering in RAM); temp files are removed after
-  each response; stale dirs are purged at startup.
-- **No auth on the API** (by design — only your bot should call it). Keep it on
-  an internal network or behind a reverse proxy (nginx/caddy) with request size
-  and rate limits. The built-in limiter is per-process.
-- Prefer **MP4 (H.264+AAC)** for video and **MP3** for audio → Telegram-friendly.
-- HLS/DASH sites may serve more steps (m3u8 segments); large files need a long
-  caller timeout.
-- If output is partial or missing, double-check **ffmpeg** is installed and on PATH.
+- **Set `YDL_WEBHOOK_SECRET`** so only your bot can use the service.
+- **Keep your repo private** — it contains your cookie files.
+- User input is validated and allowlisted before it reaches yt-dlp (no shell
+  injection, no path traversal on cookie names, only `http(s)` URLs accepted).
+- Bot tokens are passed per-request and never written to disk.

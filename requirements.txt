@@ -6,3 +6,5 @@ uvicorn>=0.29
 python-multipart>=0.0.9
 pydantic>=1.10,<2
 yt-dlp>=2025.1.15
+# Used by the webhook flow to push files to the Telegram Bot API.
+requests>=2.31

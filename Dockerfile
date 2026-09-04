@@ -20,7 +20,8 @@ RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r re
 COPY . .
 
 ENV PYTHONUNBUFFERED=1
-EXPOSE 10000
+# Documentation only — Render injects $PORT at runtime and start.sh binds to it
+# (falling back to 8000 for local runs).
+EXPOSE 8000
 
-# start.sh reads $PORT, falling back to 8000.
 CMD ["./start.sh"]

@@ -33,6 +33,31 @@ PROXY = os.getenv("YDL_PROXY") or None
 RATE_LIMIT_MAX = int(os.getenv("YDL_RATE_LIMIT_MAX", "10"))
 RATE_LIMIT_WINDOW = int(os.getenv("YDL_RATE_LIMIT_WINDOW", "60"))
 
+# --------------------------------------------------------------------------
+# Webhook / async job settings (the Cobalt-style push flow).
+# --------------------------------------------------------------------------
+
+# Telegram Bot API base URL. Override this to point at a self-hosted
+# telegram-bot-api server (which lifts the upload limit to ~2 GB), e.g.
+# "https://my-bot-api.example.com".
+TELEGRAM_API_BASE = os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org").rstrip("/")
+
+# Max file size (MB) we will try to upload to Telegram. The public Bot API
+# caps bot uploads at 50 MB; a self-hosted server allows ~2000 MB.
+MAX_TELEGRAM_UPLOAD_MB = int(os.getenv("YDL_MAX_UPLOAD_MB", "50"))
+
+# How many downloads may run at once. Keep small on free tiers (limited CPU
+# and RAM); each job holds a worker thread for its whole download.
+MAX_CONCURRENT_JOBS = int(os.getenv("YDL_MAX_CONCURRENT_JOBS", "2"))
+
+# Optional shared secret. When set, every POST /jobs request must send the
+# same value in the "X-Webhook-Secret" header (or a "secret" body field),
+# so only your bot can trigger downloads on a public URL.
+WEBHOOK_SECRET = os.getenv("YDL_WEBHOOK_SECRET") or None
+
+# How long finished job records live in the in-memory status store (seconds).
+JOB_RECORD_LIFETIME = int(os.getenv("YDL_JOB_RECORD_LIFETIME", "1800"))
+
 HOST = os.getenv("YDL_HOST", "0.0.0.0")
 PORT = int(os.getenv("YDL_PORT", "8000"))
 
