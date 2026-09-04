@@ -16,20 +16,117 @@ Telegram bot ──URL──▶ Downloader API ──yt-dlp──▶ media file
 
 ---
 
+## Use this API in any project
+
+There's a live instance deployed at:
+
+```
+https://downloaderapi-mp8v.onrender.com
+```
+
+The API is language-agnostic. You send it a URL; it returns **the media file
+bytes** in the response body. No SDK, no parsing, no auth keys.
+
+**The recipe is always the same, in any language:**
+
+1. *(Optional)* call `/info?url=<url>` first for a preview — title, thumbnail,
+   duration, uploader — without downloading anything.
+2. Call `/download?url=<url>&media_type=<video|audio>&quality=<...>`.
+3. The response body **is the file** — save it to disk or upload the raw bytes
+   straight to Telegram / a chat / your storage.
+4. Read the response headers for filenames & captions: `X-File-Name`,
+   `X-Media-Type`, `X-Title`, `X-Duration`, `X-Thumbnail`, `X-File-Count`
+   (playlist ZIPs).
+5. Errors always come back as JSON — `{"ok": false, "error": "<message>"}` —
+   with HTTP 400/422/429.
+
+The simplest possible call (`curl`):
+
+```bash
+curl -L -o out.mp4 \
+  "https://downloaderapi-mp8v.onrender.com/download?url=https%3A%2F%2Fyoutu.be%2FdQw4w9WgXcQ&quality=720p"
+```
+
+**Notes for any caller:**
+
+- **URL-encode the `url` value** (your HTTP client usually does this for query
+  objects — `curl` does not).
+- **Use a long timeout** — downloads can take minutes (`>= 5 min` is safe).
+- The Render free plan **cold-starts** after ~15 min idle; the first request
+  after that can take 30–60 s.
+- `<quality>` for video: `best` / `worst` / `4320p`–`360p`.
+  `<quality>` for audio: target kbps — `320` `256` `192` `128` `96` `64` `worst`.
+- `playlist=true` → download every entry (capped at 20) and get a `.zip`.
+- `cookies` param → filename of a cookie file inside `./cookies/` on the server
+  (for sites that need login).
+
+### Cookies — where to add them, and how
+
+Some sites (Instagram, private Twitter/X, age-restricted content, Vimeo, your
+Patreon, …) refuse downloads without **your login cookies**. The server only
+reads cookie files from one place: its `./cookies/` folder. Pass the file's
+name as the `cookies` parameter.
+
+**1. Export your cookies** as a Netscape-format `.txt` file:
+
+- Install a browser extension like **"Get cookies.txt LOCALLY"** (Chrome/Firefox
+  both have it).
+- Open the site you need cookies for (make sure you're logged in).
+- Click the extension → **Export** → save something like `youtube.txt`.
+
+Only that one file needs to exist — one cookie file can hold cookies for many
+domains.
+
+**2. Put it in `./cookies/`** (this is the project folder, wherever this API is
+running):
+
+```bash
+mv ~/Downloads/youtube.txt ./cookies/youtube.txt
+# on the deployed instance, commit & push it:
+git add cookies/youtube.txt
+git commit -m "cookies: add youtube"
+git push
+```
+
+On **Render**, cookie files are **baked into the repo** (the server's disk is
+ephemeral). Committing and pushing redeploys automatically
+(`autoDeploy: true`) and the file lands in `./cookies/`.
+
+**3. Pass the filename in every request** that needs it:
+
+```bash
+curl -L -o out.mp4 "https://downloaderapi-mp8v.onrender.com/download?url=<restricted-url>&cookies=youtube.txt"
+# in code:  params.add("cookies", "youtube.txt")
+```
+
+Safety notes:
+
+- **Only a plain filename** inside `./cookies/` is accepted — you can pass
+  `youtube.txt`, never `../secret.txt` or an absolute path.
+- Cookie files contain **login tokens** — keep your repo private, and only the
+  `*.txt` files are committed (see `.gitignore`; other files in `cookies/` are
+  ignored).
+
+Example calls for Python, Node.js, PHP, **Next.js**, and a Telegram bot are in
+[Calling from your own project](#calling-from-your-own-project) below.
+
+---
+
 ## Table of contents
 
-1. [Features](#features)
-2. [Requirements](#requirements)
-3. [Installation & running](#installation--running)
-4. [Quick test](#quick-test)
-5. [API reference](#api-reference)
-6. [Calling from your own project](#calling-from-your-own-project)
-7. [Telegram bot integration](#telegram-bot-integration)
-8. [Cookies](#cookies)
-9. [Configuration](#configuration)
-10. [Deploy to Render](#deploy-to-render)
-11. [Project layout](#project-layout)
-12. [Notes & limits](#notes--limits)
+1. [Use this API in any project](#use-this-api-in-any-project)
+2. [Features](#features)
+3. [Requirements](#requirements)
+4. [Installation & running](#installation--running)
+5. [Quick test](#quick-test)
+6. [API reference](#api-reference)
+7. [Calling from your own project](#calling-from-your-own-project)
+8. [Telegram bot integration](#telegram-bot-integration)
+9. [Cookies](#cookies)
+10. [Configuration](#configuration)
+11. [Deploy to Render](#deploy-to-render)
+12. [Project layout](#project-layout)
+13. [Notes & limits](#notes--limits)
 
 ---
 
@@ -208,6 +305,78 @@ const buffer = Buffer.from(await resp.arrayBuffer());    // ← upload this to T
 const filename = resp.headers.get("x-file-name") || "media.mp4";
 ```
 
+### Next.js (App Router)
+
+Best done as a **route-handler proxy** — the browser hits your own `/api/download`,
+the server streams the file from the downloader. Keeps the downloader URL in a
+server-only env var and out of the client bundle:
+
+`.env.local`:
+```bash
+DOWNLOADER_API=https://downloaderapi-mp8v.onrender.com
+```
+
+`app/api/download/route.ts`:
+```ts
+export const dynamic = "force-dynamic";
+// Vercel: export const maxDuration = 900;  // downloads take minutes
+
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const params = new URLSearchParams({
+    url: searchParams.get("url") ?? "",
+    media_type: searchParams.get("media_type") ?? "video",
+    quality: searchParams.get("quality") ?? "best",
+  });
+  const cookies = searchParams.get("cookies");
+  if (cookies) params.set("cookies", cookies);
+  if (searchParams.get("playlist") === "true") params.set("playlist", "true");
+
+  const upstream = await fetch(`${process.env.DOWNLOADER_API}/download?${params}`,
+    { cache: "no-store", redirect: "follow" });
+
+  if (!upstream.ok) {
+    const err = await upstream.json().catch(() => ({ error: "Download failed" }));
+    return Response.json({ ok: false, error: err.error }, { status: upstream.status });
+  }
+
+  const headers = new Headers();
+  headers.set("Content-Type", upstream.headers.get("content-type") ?? "application/octet-stream");
+  const fileName = upstream.headers.get("x-file-name");
+  if (fileName) headers.set("Content-Disposition", `attachment; filename="${fileName}"`);
+  for (const h of ["x-file-name", "x-media-type", "x-title", "x-duration", "x-thumbnail", "x-file-count"]) {
+    const v = upstream.headers.get(h);
+    if (v) headers.set(h, v);
+  }
+  return new Response(upstream.body, { headers });  // streams — no RAM blowup
+}
+```
+
+Client component that saves the file:
+```tsx
+"use client";
+export default function DownloadForm({ url }: { url: string }) {
+  return (
+    <form onSubmit={async (e) => {
+      e.preventDefault();
+      const res = await fetch(`/api/download?url=${encodeURIComponent(url)}&media_type=video&quality=720p`);
+      if (!res.ok) return alert((await res.json()).error);
+      const blob = await res.blob();                       // → trigger save / upload
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = res.headers.get("x-file-name") ?? "media.mp4";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }}>
+      <button>Download</button>
+    </form>
+  );
+}
+```
+
+The API's CORS is open (`allow_origins: ["*"]`), so calling the Render URL
+directly from the browser also works — the proxy is just cleaner.
+
 ### PHP
 
 ```php
@@ -268,20 +437,27 @@ python examples/telegram_bot.py
 ## Cookies
 
 Some sites (Instagram, private Twitter/X, age-restricted content, Vimeo, …)
-require your login cookies. Export them as a **Netscape-format** `.txt` file
-(`cookies.txt`), drop it into `./cookies/`, and pass its filename:
+require your login cookies. The full how-to (export → where to place → how to
+pass) is in [Use this API in any project → Cookies](#cookies--where-to-add-them-and-how).
+Short version:
 
 ```bash
-# Export with a browser extension like "Get cookies.txt LOCALLY"
+# 1. Export with a browser extension like "Get cookies.txt LOCALLY"
 mv ~/Downloads/youtube.com_cookies.txt ./cookies/youtube.txt
 
+# 2. On a deployed instance, commit & push (auto-redeploy):
+git add cookies/youtube.txt && git commit -m "cookies" && git push
+
+# 3. Reference it per request:
 curl -L -o out.mp4 \
   "http://127.0.0.1:8000/download?url=<private-or-restricted-url>&cookies=youtube.txt"
 ```
 
 Safety: only a **plain filename** inside `./cookies/` is accepted — path
 traversal and arbitrary file reads are rejected. One cookie file may hold
-cookies for many domains.
+cookies for many domains. Files in `cookies/` are committed (only `*.txt`,
+see `.gitignore`), so they survive deploys — but they contain login tokens,
+so keep the repo private.
 
 ---
 
