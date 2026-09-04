@@ -158,3 +158,24 @@ class TelegramClient:
                 "chat_id": chat_id,
                 "caption": caption,
             }, files={"document": (filename or path.name, fh, mime)})
+
+    def send_photo(self, chat_id: str | int, path: Path, *,
+                   caption: Optional[str] = None,
+                   filename: Optional[str] = None) -> dict[str, Any]:
+        mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+        with path.open("rb") as fh:
+            return self._call("sendPhoto", data={
+                "chat_id": chat_id,
+                "caption": caption,
+            }, files={"photo": (filename or path.name, fh, mime)})
+
+    def send_animation(self, chat_id: str | int, path: Path, *,
+                       caption: Optional[str] = None,
+                       filename: Optional[str] = None) -> dict[str, Any]:
+        """Send a GIF (or any silent looping clip) as a Telegram animation."""
+        mime = mimetypes.guess_type(path.name)[0] or "image/gif"
+        with path.open("rb") as fh:
+            return self._call("sendAnimation", data={
+                "chat_id": chat_id,
+                "caption": caption,
+            }, files={"animation": (filename or path.name, fh, mime)})

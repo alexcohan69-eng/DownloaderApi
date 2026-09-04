@@ -148,15 +148,47 @@ class JobStore:
             )
             keep_dir = result.files[0].parent if result.files else None
 
-            # Bundle a playlist into a single zip for delivery as a document.
             files = result.files
             info = result.info
             caption = p.caption or (info.title or "")[:1024]
+            duration = int(info.duration) if info.duration else None
 
-            if len(files) > 1:
-                self._set(job, "uploading", "Bundling playlist")
-                status("Bundling playlist into a zip...")
-                zip_path = files[0].parent / f"{Downloader.sanitize_filename(info.title) or 'playlist'}.zip"
+            def send_one(path: Path, cap: Optional[str]) -> None:
+                """Deliver one file using whichever Telegram method matches
+                its actual kind (image/gif/video/audio), so a group post's
+                mixed-media items each arrive natively instead of as a
+                generic document."""
+                out_name = f"{Downloader.sanitize_filename(info.title)}{path.suffix}"
+                kind = Downloader.classify_ext(path.suffix)
+                if kind == "image":
+                    tg.send_photo(job.chat_id, path, caption=cap, filename=out_name)
+                elif kind == "gif":
+                    tg.send_animation(job.chat_id, path, caption=cap, filename=out_name)
+                elif result.media_type == "audio" or kind == "audio":
+                    tg.send_audio(job.chat_id, path, caption=cap,
+                                  duration=duration, title=info.title,
+                                  performer=info.uploader, filename=out_name)
+                elif result.media_type == "video" or kind == "video":
+                    tg.send_video(job.chat_id, path, caption=cap,
+                                  duration=duration, filename=out_name)
+                else:
+                    tg.send_document(job.chat_id, path, caption=cap, filename=out_name)
+
+            # Group posts (carousels, photo/video mixes, small playlists) get
+            # each item delivered natively. Larger batches are bundled into
+            # a single zip so the chat isn't flooded with dozens of messages.
+            MAX_GROUP_ITEMS = 10
+            if len(files) > 1 and len(files) <= MAX_GROUP_ITEMS:
+                for f in files:
+                    self._check_size(f)
+                self._set(job, "uploading", f"Uploading {len(files)} items")
+                status(f"Uploading {len(files)} items to Telegram...")
+                for i, f in enumerate(files):
+                    send_one(f, caption if i == 0 else None)
+            elif len(files) > 1:
+                self._set(job, "uploading", "Bundling group media")
+                status("Bundling group media into a zip...")
+                zip_path = files[0].parent / f"{Downloader.sanitize_filename(info.title) or 'media'}.zip"
                 Downloader.make_zip(files, zip_path)
                 self._check_size(zip_path)
                 self._set(job, "uploading", "Uploading zip")
@@ -166,18 +198,9 @@ class JobStore:
             else:
                 file_path = files[0]
                 self._check_size(file_path)
-                ext = file_path.suffix.lstrip(".") or "bin"
-                out_name = f"{Downloader.sanitize_filename(info.title)}.{ext}"
-                duration = int(info.duration) if info.duration else None
                 self._set(job, "uploading", "Uploading to Telegram")
                 status("Uploading to Telegram...")
-                if result.media_type == "audio":
-                    tg.send_audio(job.chat_id, file_path, caption=caption,
-                                  duration=duration, title=info.title,
-                                  performer=info.uploader, filename=out_name)
-                else:
-                    tg.send_video(job.chat_id, file_path, caption=caption,
-                                  duration=duration, filename=out_name)
+                send_one(file_path, caption)
 
             if status_msg_id is not None:
                 tg.delete_message(job.chat_id, status_msg_id)
