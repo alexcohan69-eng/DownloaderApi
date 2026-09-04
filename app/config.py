@@ -58,6 +58,9 @@ WEBHOOK_SECRET = os.getenv("YDL_WEBHOOK_SECRET") or None
 # How long finished job records live in the in-memory status store (seconds).
 JOB_RECORD_LIFETIME = int(os.getenv("YDL_JOB_RECORD_LIFETIME", "1800"))
 
+# How many recent log lines the live log viewer (/logs) keeps in memory.
+LOG_BUFFER_SIZE = int(os.getenv("YDL_LOG_BUFFER_SIZE", "500"))
+
 HOST = os.getenv("YDL_HOST", "0.0.0.0")
 PORT = int(os.getenv("YDL_PORT", "8000"))
 
