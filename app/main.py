@@ -122,8 +122,16 @@ class WebhookRequest(BaseModel):
     """Payload your Telegram bot POSTs to /jobs to trigger a push download."""
 
     url: str
-    chat_id: str = Field(..., description="Telegram chat id to deliver into")
-    bot_token: str = Field(..., description="Bot token used to send the file")
+    chat_id: Optional[str] = Field(
+        None,
+        description="Telegram chat id to deliver into. Falls back to "
+                    "PLAYGROUND_TELEGRAM_CHAT_ID if omitted.",
+    )
+    bot_token: Optional[str] = Field(
+        None,
+        description="Bot token used to send the file. Falls back to "
+                    "PLAYGROUND_TELEGRAM_BOT_TOKEN if omitted.",
+    )
     media_type: str = Field("video", description="video | audio | auto (any: image/gif/video/audio)")
     quality: str = Field("best", description="best/720p/etc for video, kbps for audio (ignored for auto)")
     cookies: Optional[str] = Field(None, description="cookie file name inside ./cookies/")
@@ -140,18 +148,16 @@ class WebhookRequest(BaseModel):
         return v
 
     @validator("chat_id")
-    def _valid_chat(cls, v: str) -> str:
-        v = str(v).strip()
-        if not v:
-            raise ValueError("chat_id is required")
-        return v
+    def _valid_chat(cls, v: Optional[str]) -> Optional[str]:
+        v = str(v).strip() if v is not None else ""
+        return v or None
 
     @validator("bot_token")
-    def _valid_token(cls, v: str) -> str:
+    def _valid_token(cls, v: Optional[str]) -> Optional[str]:
         v = (v or "").strip()
-        if not valid_token(v):
+        if v and not valid_token(v):
             raise ValueError("bot_token looks invalid")
-        return v
+        return v or None
 
     @validator("media_type")
     def _valid_media_type(cls, v: str) -> str:
@@ -416,10 +422,22 @@ def create_job(
 
     _validate_quality(body.media_type, body.quality)
 
+    # Fall back to the server-configured Telegram destination (e.g. the
+    # in-browser Playground) when the caller doesn't supply its own.
+    chat_id = body.chat_id or config.PLAYGROUND_TELEGRAM_CHAT_ID
+    bot_token = body.bot_token or config.PLAYGROUND_TELEGRAM_BOT_TOKEN
+    if not chat_id or not bot_token:
+        raise HTTPException(
+            status_code=422,
+            detail="chat_id and bot_token are required (or configure "
+                   "PLAYGROUND_TELEGRAM_CHAT_ID / PLAYGROUND_TELEGRAM_BOT_TOKEN "
+                   "on the server).",
+        )
+
     job = jobs.store.submit(JobParams(
         url=body.url,
-        chat_id=body.chat_id,
-        bot_token=body.bot_token,
+        chat_id=chat_id,
+        bot_token=bot_token,
         media_type=body.media_type,
         quality=body.quality,
         cookies=body.cookies,

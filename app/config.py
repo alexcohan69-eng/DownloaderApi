@@ -55,6 +55,14 @@ MAX_CONCURRENT_JOBS = int(os.getenv("YDL_MAX_CONCURRENT_JOBS", "2"))
 # so only your bot can trigger downloads on a public URL.
 WEBHOOK_SECRET = os.getenv("YDL_WEBHOOK_SECRET") or None
 
+# Default Telegram destination used by the in-browser Playground. When both
+# are set, the Playground's "Send to Telegram" button can queue a /jobs
+# delivery without the visitor having to supply a chat id or bot token.
+# Set these on the host (e.g. Render's environment variables panel) —
+# never hardcode real tokens in source.
+PLAYGROUND_TELEGRAM_CHAT_ID = os.getenv("PLAYGROUND_TELEGRAM_CHAT_ID") or None
+PLAYGROUND_TELEGRAM_BOT_TOKEN = os.getenv("PLAYGROUND_TELEGRAM_BOT_TOKEN") or None
+
 # How long finished job records live in the in-memory status store (seconds).
 JOB_RECORD_LIFETIME = int(os.getenv("YDL_JOB_RECORD_LIFETIME", "1800"))
 
