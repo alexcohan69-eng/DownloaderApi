@@ -192,9 +192,7 @@ class Downloader:
     """One instance per request; keep it cheap and stateless."""
 
     def __init__(self, cookie_name: Optional[str] = None, proxy: Optional[str] = None):
-        self.cookiefile: Optional[Path] = None
-        if cookie_name:
-            self.cookiefile = self._resolve_cookie(cookie_name)
+        self.cookie_paths: list[Path] = self._get_cookie_paths(cookie_name)
         self.proxy = proxy or config.PROXY
 
     # -- helpers -----------------------------------------------------------
@@ -216,6 +214,31 @@ class Downloader:
             return bool(Downloader._resolve_cookie(name))
         except DownloadError:
             return False
+
+    @staticmethod
+    def _get_cookie_paths(preferred: Optional[str] = None) -> list[Path]:
+        """Smart fallback: returns a prioritized list of cookie files to attempt."""
+        paths = []
+        if preferred:
+            try:
+                paths.append(Downloader._resolve_cookie(preferred))
+            except DownloadError:
+                pass
+        
+        # Always prioritize cookies.txt next
+        default_cookie = config.COOKIES_DIR / "cookies.txt"
+        if default_cookie.is_file() and default_cookie not in paths:
+            paths.append(default_cookie)
+            
+        # Collect any remaining .txt files from the directory as a fallback
+        try:
+            for p in config.COOKIES_DIR.glob("*.txt"):
+                if p.is_file() and p not in paths:
+                    paths.append(p)
+        except OSError:
+            pass
+            
+        return paths
 
     @staticmethod
     def sanitize_filename(name: str) -> str:
@@ -261,6 +284,33 @@ class Downloader:
         except Exception:
             pass  # progress reporting must never break a download
 
+    def _run_extraction(self, base_opts: dict[str, Any], url: str, download: bool) -> Any:
+        """Run extraction and rotate cookies automatically if an auth/age error occurs."""
+        if not self.cookie_paths:
+            return _extract_with_fallback(base_opts, url, download=download)
+            
+        last_exc = None
+        for i, cp in enumerate(self.cookie_paths):
+            opts = dict(base_opts)
+            opts["cookiefile"] = str(cp)
+            try:
+                return _extract_with_fallback(opts, url, download=download)
+            except yt_dlp.utils.DownloadError as e:
+                last_exc = e
+                msg = str(getattr(e, "msg", None) or e).lower()
+                
+                # Verify if the error is related to authentication or restrictions
+                auth_keywords = ["sign in", "bot", "suspend", "no video", "age", "restrict", "private", "login", "member"]
+                is_auth_error = any(k in msg for k in auth_keywords)
+                
+                if is_auth_error and i < len(self.cookie_paths) - 1:
+                    log.warning("Cookie '%s' failed (Auth/Age Issue). Retrying with next cookie...", cp.name)
+                    continue
+                else:
+                    break
+                    
+        raise last_exc
+
     # -- main entry point --------------------------------------------------
 
     def download(self, url: str, media_type: str = "video",
@@ -296,8 +346,6 @@ class Downloader:
             }
             if progress is not None:
                 opts["progress_hooks"] = [lambda d: self._progress_hook(d, progress)]
-            if self.cookiefile:
-                opts["cookiefile"] = str(self.cookiefile)
             if self.proxy:
                 opts["proxy"] = self.proxy
 
@@ -318,7 +366,8 @@ class Downloader:
             if playlist and config.MAX_PLAYLIST_ITEMS:
                 opts["playlist_items"] = f"1:{config.MAX_PLAYLIST_ITEMS}"
 
-            info = _extract_with_fallback(opts, url, download=True)
+            # Execute with automated cookie fallback
+            info = self._run_extraction(opts, url, download=True)
 
             files = self._final_files(dl_dir, expected_ext)
             if not files:
@@ -361,13 +410,12 @@ class Downloader:
             "skip_download": True,
             "extractor_args": _YOUTUBE_EXTRACTOR_ARGS,
         }
-        if self.cookiefile:
-            opts["cookiefile"] = str(self.cookiefile)
         if self.proxy:
             opts["proxy"] = self.proxy
 
         try:
-            base = _extract_with_fallback(opts, url, download=False)
+            # Execute with automated cookie fallback
+            base = self._run_extraction(opts, url, download=False)
         except yt_dlp.utils.DownloadError as e:
             raise DownloadError(self._friendly_error(e), cause=e)
 
